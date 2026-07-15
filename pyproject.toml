@@ -1,0 +1,11 @@
+[project]
+name = "gym-edge-service-zkteco"
+version = "0.1.0"
+description = "Servicio edge local para terminales ZKTeco (SpeedFace) en Gym System."
+requires-python = ">=3.9"
+dependencies = [
+    "pyzk>=0.9",
+]
+
+[project.scripts]
+gym-edge-service-zkteco = "edge_service_zkteco.main:run"
