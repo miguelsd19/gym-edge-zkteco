@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+# Bit 0 de privilege en el protocolo ZK: usuario deshabilitado. El terminal lo
+# rechaza aunque lo reconozca. Los bits de rol (2, 6, 14) no se tocan.
+USER_DISABLED_FLAG = 1
+
 
 @dataclass
 class AccessDecision:
@@ -32,6 +36,10 @@ class ZkUserInfo:
     password: str
     group_id: str
     card: int
+
+    @property
+    def disabled(self) -> bool:
+        return bool(self.privilege & USER_DISABLED_FLAG)
 
 
 @dataclass

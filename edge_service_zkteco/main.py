@@ -16,7 +16,7 @@ from edge_service_zkteco.event_parser import parse_event_candidate
 from edge_service_zkteco.failed_attempts import FailedAttemptStore
 from edge_service_zkteco.file_event_source import FileEventSource
 from edge_service_zkteco.logging_setup import configure_logging
-from edge_service_zkteco.models import FailedAttempt, ZkUserInfo
+from edge_service_zkteco.models import USER_DISABLED_FLAG, FailedAttempt, ZkUserInfo
 from edge_service_zkteco.state_store import ProcessedEventStore
 from edge_service_zkteco.zk_client import ZkClient, ZkUnavailableError
 
@@ -62,7 +62,7 @@ class _FileDeviceStub:
     def get_users(self) -> list[ZkUserInfo]:
         raise ZkUnavailableError("User role sync is not available in file mode.")
 
-    def set_user_group(self, user: ZkUserInfo, group_id: str) -> None:
+    def set_user_access(self, user: ZkUserInfo, group_id: str, disabled: bool) -> None:
         raise ZkUnavailableError("User role sync is not available in file mode.")
 
     def refresh_data(self) -> None:
@@ -338,18 +338,27 @@ def _sync_user_roles(
             if target_user_type == "normal"
             else config.zk_blocked_group_id
         )
-        if (existing_user.group_id or "").strip() == target_group:
+        # Ademas del grupo se ajusta el bit de deshabilitado: otros sistemas
+        # (p. ej. ProGym) bloquean asi a los vencidos, y un miembro que renueva
+        # quedaria rechazado por el terminal aunque este en el grupo permitido.
+        target_disabled = target_user_type == "blackList"
+        if (
+            (existing_user.group_id or "").strip() == target_group
+            and existing_user.disabled == target_disabled
+        ):
             counters["unchanged"] += 1
             continue
 
-        device.set_user_group(existing_user, target_group)
+        device.set_user_access(existing_user, target_group, target_disabled)
         existing_user.group_id = target_group
+        existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
         counters["updated"] += 1
         logger.info(
-            "ZK user group updated. user_id=%s member=%s group=%s (%s) reason=%s",
+            "ZK user access updated. user_id=%s member=%s group=%s disabled=%s (%s) reason=%s",
             identifier,
             assignment.member_name or assignment.member_id or "-",
             target_group,
+            target_disabled,
             target_user_type,
             assignment.reason or "-",
         )

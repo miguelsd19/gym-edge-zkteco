@@ -237,7 +237,7 @@ class ZkClientTests(unittest.TestCase):
         with self.assertRaises(ZkUnavailableError):
             client.healthcheck()
 
-    def test_set_user_group_resends_full_user_record(self):
+    def test_set_user_access_resends_full_user_record(self):
         conn = FakeConn()
         conn.users = [
             SimpleNamespace(
@@ -254,7 +254,7 @@ class ZkClientTests(unittest.TestCase):
 
         users = client.get_users()
         self.assertEqual(len(users), 1)
-        client.set_user_group(users[0], "99")
+        client.set_user_access(users[0], "99", disabled=True)
 
         self.assertEqual(len(conn.set_user_calls), 1)
         call = conn.set_user_calls[0]
@@ -263,7 +263,7 @@ class ZkClientTests(unittest.TestCase):
             {
                 "uid": 7,
                 "name": "Ana Activa",
-                "privilege": 0,
+                "privilege": 1,
                 "password": "pw",
                 "group_id": "99",
                 "user_id": "1001",

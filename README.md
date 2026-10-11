@@ -55,20 +55,25 @@ ZK_BLOCKED_GROUP_ID=99
 Si prefieres reutilizar el `rfid_code` del miembro puedes poner `ACCESS_MODE=rfid`; el edge
 enviara el identificador a `/api/access/validate/` como `rfid_code`.
 
-## Bloqueo de miembros vencidos (sync de grupos)
+## Bloqueo de miembros vencidos (sync de grupos y deshabilitado)
 
 En Hikvision el edge usa `userType=blackList`. En ZKTeco no existe blackList por usuario, asi que
-el edge mueve a los usuarios entre **grupos de acceso** del terminal:
+el edge ajusta dos cosas del usuario en el terminal:
 
-- miembro activo con suscripcion vigente → `ZK_ALLOWED_GROUP_ID` (default `1`)
-- miembro inactivo, suspendido o sin suscripcion → `ZK_BLOCKED_GROUP_ID` (default `99`)
+- miembro activo con suscripcion vigente → `ZK_ALLOWED_GROUP_ID` (default `1`) y **habilitado**
+- miembro inactivo, suspendido o sin suscripcion → `ZK_BLOCKED_GROUP_ID` (default `99`) y
+  **deshabilitado** (bit 0 de `privilege`; los bits de rol de admin no se tocan)
 
-**Configuracion obligatoria en el terminal**: crea el grupo `99` (menu Access Control →
-Access Groups) **sin timezone de acceso valida**, para que sus miembros no puedan abrir la puerta.
+El deshabilitado basta para que el terminal niegue el acceso aunque reconozca la cara o huella.
+Ademas es como ProGym bloquea a sus vencidos: al migrar una sucursal desde ProGym, el primer sync
+habilita a todo miembro activo que ProGym habia dejado deshabilitado.
+
+**Recomendado en el terminal**: crea tambien el grupo `99` (menu Access Control →
+Access Groups) **sin timezone de acceso valida**, como segunda barrera.
 El grupo `1` es el grupo normal por defecto de ZKTeco.
 
 El sync **no borra usuarios ni enrolamientos**: usa `set_user` re-enviando el registro completo
-leido del equipo, cambiando solo el grupo. Los templates de cara/huella viven aparte (por `uid`)
+leido del equipo, cambiando solo el grupo y el bit de deshabilitado. Los templates de cara/huella viven aparte (por `uid`)
 y no se tocan. Aun asi, tras la primera puesta en marcha verifica con un usuario de prueba:
 
 1. Enrola una cara de prueba en el terminal.
@@ -83,7 +88,7 @@ Si un firmware da problemas, se puede apagar con `ZK_USER_ROLE_SYNC_ENABLED=fals
 
 Busca estos logs:
 
-- `ZK user group updated...`
+- `ZK user access updated...`
 - `ZK user role sync completed...`
 
 ## Apertura remota desde un backend en la nube

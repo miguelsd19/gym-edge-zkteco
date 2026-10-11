@@ -17,12 +17,12 @@ def _assignment(member_id="1", device_user_id="1001", target="normal", rfid=""):
     )
 
 
-def _user(uid=7, user_id="1001", group_id="1"):
+def _user(uid=7, user_id="1001", group_id="1", privilege=0):
     return ZkUserInfo(
         uid=uid,
         user_id=user_id,
         name="Test User",
-        privilege=0,
+        privilege=privilege,
         password="",
         group_id=group_id,
         card=0,
@@ -48,8 +48,8 @@ class _FakeDevice:
     def get_users(self):
         return self.users
 
-    def set_user_group(self, user, group_id):
-        self.set_group_calls.append((user.user_id, group_id))
+    def set_user_access(self, user, group_id, disabled):
+        self.set_group_calls.append((user.user_id, group_id, disabled))
 
     def refresh_data(self):
         self.refresh_calls += 1
@@ -85,13 +85,13 @@ class SyncUserRolesTests(unittest.TestCase):
             reason="test",
         )
 
-        self.assertEqual(device.set_group_calls, [("1001", "99")])
+        self.assertEqual(device.set_group_calls, [("1001", "99", True)])
         self.assertEqual(device.refresh_calls, 1)
         self.assertEqual(counters["updated"], 1)
 
     def test_restores_active_member_to_allowed_group(self):
         backend = _FakeBackend([_assignment(target="normal")])
-        device = _FakeDevice([_user(group_id="99")])
+        device = _FakeDevice([_user(group_id="99", privilege=1)])
 
         counters = _sync_user_roles(
             logger=_logger(),
@@ -101,8 +101,42 @@ class SyncUserRolesTests(unittest.TestCase):
             reason="test",
         )
 
-        self.assertEqual(device.set_group_calls, [("1001", "1")])
+        self.assertEqual(device.set_group_calls, [("1001", "1", False)])
         self.assertEqual(counters["updated"], 1)
+
+    def test_enables_member_disabled_by_previous_system(self):
+        # ProGym bloquea vencidos con el bit de deshabilitado; al renovar en
+        # Gym System hay que habilitarlo aunque ya este en el grupo permitido.
+        backend = _FakeBackend([_assignment(target="normal")])
+        user = _user(group_id="1", privilege=1)
+        device = _FakeDevice([user])
+
+        counters = _sync_user_roles(
+            logger=_logger(),
+            config=_config(),
+            backend_api=backend,
+            device=device,
+            reason="test",
+        )
+
+        self.assertEqual(device.set_group_calls, [("1001", "1", False)])
+        self.assertFalse(user.disabled)
+        self.assertEqual(counters["updated"], 1)
+
+    def test_skips_blocked_member_already_disabled_in_blocked_group(self):
+        backend = _FakeBackend([_assignment(target="blackList")])
+        device = _FakeDevice([_user(group_id="99", privilege=1)])
+
+        counters = _sync_user_roles(
+            logger=_logger(),
+            config=_config(),
+            backend_api=backend,
+            device=device,
+            reason="test",
+        )
+
+        self.assertEqual(device.set_group_calls, [])
+        self.assertEqual(counters["unchanged"], 1)
 
     def test_skips_user_already_in_target_group_without_refresh(self):
         backend = _FakeBackend([_assignment(target="normal")])
@@ -155,7 +189,7 @@ class SyncUserRolesTests(unittest.TestCase):
         )
 
         self.assertEqual(counters["updated"], 1)
-        self.assertEqual(device.set_group_calls, [("", "99")])
+        self.assertEqual(device.set_group_calls, [("", "99", True)])
 
     def test_disabled_sync_does_nothing(self):
         backend = _FakeBackend([_assignment(target="blackList")])
@@ -188,7 +222,7 @@ class SyncUserRolesTests(unittest.TestCase):
         )
 
         self.assertEqual(counters["updated"], 1)
-        self.assertEqual(device.set_group_calls, [("RF01", "99")])
+        self.assertEqual(device.set_group_calls, [("RF01", "99", True)])
 
 
 class HandleUserRoleSyncTests(unittest.TestCase):

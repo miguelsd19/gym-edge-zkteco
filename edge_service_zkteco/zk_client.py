@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from edge_service_zkteco.config import EdgeConfig
 from edge_service_zkteco.event_parser import event_to_dict
-from edge_service_zkteco.models import ZkUserInfo
+from edge_service_zkteco.models import USER_DISABLED_FLAG, ZkUserInfo
 
 
 class ZkUnavailableError(Exception):
@@ -134,16 +134,20 @@ class ZkClient:
             )
         return users
 
-    def set_user_group(self, user: ZkUserInfo, group_id: str) -> None:
+    def set_user_access(self, user: ZkUserInfo, group_id: str, disabled: bool) -> None:
         # set_user sobreescribe el registro completo del usuario (los templates
         # de cara/huella viven aparte, keyed por uid), por eso se reenvian todos
-        # los campos leidos del equipo cambiando solo group_id.
+        # los campos leidos del equipo cambiando solo group_id y el bit de
+        # deshabilitado de privilege.
+        privilege = user.privilege & ~USER_DISABLED_FLAG
+        if disabled:
+            privilege |= USER_DISABLED_FLAG
         self._submit(
             "set_user",
             lambda conn: conn.set_user(
                 uid=user.uid,
                 name=user.name,
-                privilege=user.privilege,
+                privilege=privilege,
                 password=user.password,
                 group_id=str(group_id),
                 user_id=user.user_id,

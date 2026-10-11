@@ -37,7 +37,7 @@ Antes de instalar el edge, el terminal debe quedar asi (lo hace soporte una sola
 2. Puerto de comunicacion `4370` (es el default de ZKTeco).
 3. Si el terminal tiene comm key configurada, esa clave va en `ZK_DEVICE_PASSWORD`.
 4. Crear el grupo de acceso bloqueado: menu `Access Control` → `Access Groups`,
-   grupo `99` **sin horario de acceso valido**. A ese grupo se mueven los miembros vencidos.
+   grupo `99` **sin horario de acceso valido**. A ese grupo se mueven los miembros vencidos, que ademas quedan deshabilitados en el lector.
 5. Enrolar a los usuarios usando el mismo `User ID` que tiene el miembro en Gym System
    (`device_user_id`).
 
@@ -171,8 +171,8 @@ Importante:
 El edge consulta al backend que miembros deben quedar permitidos o bloqueados y los mueve
 de grupo dentro del terminal ZKTeco:
 
-- miembro activo → grupo `1` (normal)
-- miembro vencido o suspendido → grupo `99` (bloqueado, sin horario de acceso)
+- miembro activo → grupo `1` (normal) y habilitado
+- miembro vencido o suspendido → grupo `99` (sin horario de acceso) y deshabilitado
 
 Esto corre:
 
