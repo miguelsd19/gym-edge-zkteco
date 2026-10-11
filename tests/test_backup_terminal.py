@@ -22,7 +22,7 @@ class FakeConn:
         self.user_records = [
             SimpleNamespace(uid=1, user_id="100", name="Ana Pérez", privilege=0, password="", group_id="1", card=0),
             SimpleNamespace(uid=2, user_id="101", name="Luis", privilege=14, password="1234", group_id="1", card=55),
-            SimpleNamespace(uid=3, user_id="100", name="Duplicado", privilege=0, password="", group_id="1", card=0),
+            SimpleNamespace(uid=3, user_id="100", name="Duplicado", privilege=1, password="", group_id="1", card=0),
         ]
         self.templates = [
             SimpleNamespace(uid=1, fid=0, valid=1, template=b"\x01\x02"),
@@ -136,6 +136,7 @@ class BackupTerminalTests(unittest.TestCase):
         self.assertEqual([u["user_id"] for u in users], ["100", "101", "100"])
         self.assertEqual(users[0]["name"], "Ana Pérez")
         self.assertTrue(users[1]["is_admin"])
+        self.assertFalse(users[1]["disabled"])
 
         fingers = json.loads((self.out / "fingerprints.json").read_text(encoding="utf-8"))
         self.assertEqual(fingers[0]["template_b64"], "AQI=")
@@ -168,6 +169,8 @@ class BackupTerminalTests(unittest.TestCase):
         self.assertEqual(rows[0]["fingerprints"], "2")
         self.assertEqual(rows[1]["fingerprints"], "0")
         self.assertNotIn("password", rows[0])
+        self.assertEqual(rows[2]["disabled"], "True")
+        self.assertEqual(rows[2]["is_admin"], "False")
 
     def test_backup_unreachable_device(self):
         code = _run(
@@ -203,6 +206,31 @@ class BackupTerminalTests(unittest.TestCase):
             _run(["--host", "10.0.0.5", "--out", str(self.out), "--disable-device"], FakeZK(conn))
 
         self.assertEqual(conn.calls, ["disable", "enable", "disconnect"])
+
+    def test_backup_attendance_tolerates_corrupt_dates(self):
+        class PyzkLikeConn(FakeConn):
+            # Imita pyzk: get_attendance decodifica cada fecha con el metodo privado.
+            def _ZK__decode_time(self, raw):
+                if raw == b"bad":
+                    raise ValueError("day is out of range for month")
+                return datetime(2026, 10, 1, 8, 30)
+
+            def get_attendance(self):
+                return [
+                    SimpleNamespace(uid=1, user_id="100", timestamp=self._ZK__decode_time(raw), status=1, punch=0)
+                    for raw in (b"ok", b"bad")
+                ]
+
+        conn = PyzkLikeConn()
+
+        code = _run(["--host", "10.0.0.5", "--out", str(self.out)], FakeZK(conn))
+
+        self.assertEqual(code, EXIT_OK)
+        attendance = json.loads((self.out / "attendance.json").read_text(encoding="utf-8"))
+        self.assertEqual([r["timestamp"] for r in attendance], ["2026-10-01T08:30:00", None])
+        manifest = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("1 marcas del historial", " ".join(manifest["warnings"]))
+        self.assertNotIn("_ZK__decode_time", vars(conn))
 
     def test_backup_skip_flags(self):
         _run(

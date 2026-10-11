@@ -62,6 +62,7 @@ USER_CSV_FIELDS = (
     "card",
     "group_id",
     "privilege",
+    "disabled",
     "is_admin",
     "fingerprints",
 )
@@ -90,8 +91,10 @@ def serialize_user(user: Any) -> dict[str, Any]:
         "user_id": str(getattr(user, "user_id", "") or "").strip(),
         "name": str(getattr(user, "name", "") or "").strip(),
         "privilege": privilege,
-        # En pyzk USER_ADMIN = 14; cualquier privilegio > 0 es algun tipo de admin.
-        "is_admin": privilege > 0,
+        # El bit 0 de privilege es "usuario deshabilitado" (asi bloquea ProGym a
+        # los vencidos); los bits de rol son 2 = enrolador, 6 = manager, 14 = admin.
+        "disabled": bool(privilege & 1),
+        "is_admin": bool(privilege & 0b1110),
         "password": str(getattr(user, "password", "") or ""),
         "group_id": str(getattr(user, "group_id", "") or "").strip(),
         "card": int(getattr(user, "card", 0) or 0),
@@ -234,10 +237,20 @@ def run_backup(args: argparse.Namespace, zk_factory: Callable[..., Any] | None =
             _log("Historial de marcas: omitido (--skip-attendance)")
         else:
             try:
-                attendance = [serialize_attendance(r) for r in conn.get_attendance() or []]
+                restore_decode_time = _tolerate_bad_record_dates(conn)
+                try:
+                    attendance = [serialize_attendance(r) for r in conn.get_attendance() or []]
+                finally:
+                    restore_decode_time()
                 _save_json(out_dir / "attendance.json", attendance)
                 counts["attendance"] = len(attendance)
                 _log(f"Historial de marcas: {len(attendance)}")
+                bad_dates = sum(1 for record in attendance if record["timestamp"] is None)
+                if bad_dates:
+                    warnings.append(
+                        f"{bad_dates} marcas del historial tienen fecha corrupta en el equipo; "
+                        "se guardaron con timestamp vacio."
+                    )
             except Exception as exc:  # noqa: BLE001
                 failures["attendance"] = str(exc)
                 _log(f"[ERROR] Historial de marcas: {exc}")
@@ -293,6 +306,24 @@ def run_backup(args: argparse.Namespace, zk_factory: Callable[..., Any] | None =
         return EXIT_PARTIAL
     _log(f"Respaldo completo en {out_dir}")
     return EXIT_OK
+
+
+def _tolerate_bad_record_dates(conn: Any) -> Callable[[], None]:
+    # pyzk decodifica cada marca con ZK.__decode_time y un solo registro con
+    # fecha imposible (p. ej. dia 31 en un mes de 30) aborta get_attendance()
+    # completo. Durante el respaldo esas fechas se guardan como None.
+    original = getattr(conn, "_ZK__decode_time", None)
+    if original is None:
+        return lambda: None
+
+    def tolerant(raw: bytes) -> Any:
+        try:
+            return original(raw)
+        except ValueError:
+            return None
+
+    conn._ZK__decode_time = tolerant
+    return lambda: delattr(conn, "_ZK__decode_time")
 
 
 def _duplicated_user_ids(users: list[dict[str, Any]]) -> list[str]:
