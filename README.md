@@ -111,6 +111,16 @@ La apertura es un no-op logueado. Sirve para probar el flujo completo contra el 
 echo "1001" >> runtime/input.txt
 ```
 
+## Respaldo del lector (migracion desde otro sistema)
+
+`backup_terminal` descarga del lector, en modo solo lectura, usuarios, huellas e historial de
+marcas (las caras no son descargables y se quedan en el equipo). Paso a paso para la sucursal
+que viene de ProGym: [GUIA_RESPALDO_PROGYM.md](GUIA_RESPALDO_PROGYM.md).
+
+```bash
+python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backups/sucursal
+```
+
 ## Ejecucion
 
 ```bash
