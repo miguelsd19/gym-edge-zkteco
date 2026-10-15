@@ -16,19 +16,22 @@ Su trabajo es:
 
 ## Antes de empezar
 
-Necesitas estas 5 cosas:
+Ten a la mano:
 
-1. Una PC Windows conectada a la misma red que el terminal ZKTeco.
-2. El codigo del edge en `C:\edge_service_zkteco` (se clona de GitHub, ver "Paso 0").
-3. El archivo `dist\.env` correcto para esa sucursal (con la IP del terminal en `ZK_DEVICE_HOST`).
-4. El archivo `dist\gym-edge-service-zkteco.exe`.
-5. `NSSM` descargado en la PC para instalar los servicios.
+1. Una PC Windows (10 u 11) conectada **por cable** a la misma red que el lector ZKTeco, con internet.
+2. Una cuenta de GitHub con acceso al repo `miguelsd19/gym-edge-zkteco` (es privado).
+3. El archivo `.env` de esa sucursal. **No viene en el repo** porque lleva el `DEVICE_TOKEN`
+   del punto de acceso; pidelo a soporte y traelo en USB o por un gestor de contrasenas.
+4. Permiso de administrador en la PC (los servicios se instalan como administrador).
+5. Si el backend esta en la nube (Railway) y quieres abrir el torniquete desde la app: una
+   cuenta de `ngrok` y su authtoken.
 
-Si el backend esta en la nube y quieres que la apertura remota desde el sistema funcione,
-necesitas tambien:
+Toma unos 30 a 45 minutos.
 
-6. `ngrok` instalado en la PC.
-7. Un authtoken valido de `ngrok`.
+> **Importante:** el lector acepta **una sola conexion a la vez**. Si la sucursal venia usando
+> otro sistema (por ejemplo ProGym), ese programa o su conexion en la nube deben estar apagados
+> antes de arrancar el edge. Si es una migracion, sigue antes la
+> [guia de respaldo del lector](GUIA_RESPALDO_PROGYM.md).
 
 ## Configuracion previa del terminal ZKTeco
 
@@ -38,73 +41,89 @@ Antes de instalar el edge, el terminal debe quedar asi (lo hace soporte una sola
 2. Puerto de comunicacion `4370` (es el default de ZKTeco).
 3. Si el terminal tiene comm key configurada, esa clave va en `ZK_DEVICE_PASSWORD`.
 4. Crear el grupo de acceso bloqueado: menu `Access Control` → `Access Groups`,
-   grupo `99` **sin horario de acceso valido**. A ese grupo se mueven los miembros vencidos, que ademas quedan deshabilitados en el lector.
+   grupo `99` **sin horario de acceso valido**. A ese grupo se mueven los miembros vencidos,
+   que ademas quedan deshabilitados en el lector.
 5. Enrolar a los usuarios usando como `User ID` el **ID biometrico** que muestra la ficha del
    miembro en Gym System (con `ACCESS_MODE=rfid`, el campo `rfid_code`).
 
-## Paso 0. Bajar el codigo desde GitHub (solo la primera vez)
+## Instalacion Inicial
 
-1. Instala **Git para Windows** desde https://git-scm.com/download/win (opciones por defecto).
-2. Abre `Símbolo del sistema` y clona el repo en la carpeta que usa esta guia:
+En esta guia todo queda en `C:\edge_service_zkteco` y las herramientas en `C:\tools\`.
+Si usas otras carpetas, cambia esas rutas en los comandos.
+
+### Paso 1. Instalar los programas necesarios
+
+1. **Git**: descarga e instala https://git-scm.com/download/win (deja las opciones por defecto).
+2. **Python 3.11**: descarga e instala https://www.python.org/downloads/windows/ (version 3.11).
+   En la primera pantalla del instalador **marca "Add python.exe to PATH"**.
+3. **NSSM** (para dejar el edge como servicio de Windows):
+   - Descarga el zip de https://nssm.cc/download (la version mas reciente).
+   - Copia el archivo `win64\nssm.exe` del zip a `C:\tools\nssm\nssm.exe`.
+4. **ngrok** (solo si el backend esta en la nube):
+   - Descarga el zip de Windows de https://ngrok.com/download.
+   - Copia `ngrok.exe` a `C:\tools\ngrok\ngrok.exe`.
+
+Cierra y vuelve a abrir cualquier ventana de CMD despues de instalar, para que tome los cambios.
+
+### Paso 2. Bajar el codigo desde GitHub
+
+Abre `Símbolo del sistema` (CMD) y pega:
 
 ```bat
 git clone https://github.com/miguelsd19/gym-edge-zkteco.git C:\edge_service_zkteco
-```
-
-El repo es privado: la primera vez Git abre una ventana para iniciar sesion en GitHub con una
-cuenta que tenga acceso al repo.
-
-3. Crea el `.env`: **no viene en el repo** porque lleva el `DEVICE_TOKEN` del punto de acceso.
-   Copialo por un medio seguro (USB, gestor de contrasenas) o crealo desde `.env.example`.
-
-Para actualizar el edge mas adelante:
-
-```bat
-cd /d C:\edge_service_zkteco
-git pull
-```
-
-y vuelve a construir el ejecutable (`windows\build_windows.bat`) y reinicia el servicio.
-
-## Carpeta que se va a usar
-
-En esta guia asumimos que la carpeta esta aqui:
-
-```bat
-C:\edge_service_zkteco
-```
-
-Si la pusiste en otro lugar, solo cambia esa ruta en los comandos.
-
-## Instalacion Inicial
-
-### Paso 1. Abrir CMD
-
-Abre `Símbolo del sistema` en Windows.
-
-### Paso 2. Entrar a la carpeta del edge
-
-Pega esto y presiona Enter:
-
-```bat
 cd /d C:\edge_service_zkteco
 ```
 
-### Paso 3. Verificar que exista el ejecutable y el .env
+Como el repo es privado, la primera vez se abre una ventana para iniciar sesion en GitHub.
+Usa una cuenta con acceso al repo (de preferencia una de solo lectura para esta PC, no la
+cuenta personal de nadie).
 
-Pega esto y presiona Enter:
+### Paso 3. Construir el ejecutable
+
+En la misma ventana de CMD, dentro de `C:\edge_service_zkteco`, pega uno por uno:
+
+```bat
+py -3.11 -m venv .venv
+.venv\Scripts\pip install pyzk pyinstaller
+windows\build_windows.bat
+```
+
+Al final debe decir `Build listo en dist\gym-edge-service-zkteco.exe`.
+
+Si `py` no se reconoce, Python no quedo en el PATH: reinstalalo marcando "Add python.exe to PATH".
+
+### Paso 4. Poner el archivo .env
+
+Copia el `.env` de la sucursal a `C:\edge_service_zkteco\dist\.env` (junto al `.exe`). Por
+ejemplo, si viene en una USB en `E:`:
+
+```bat
+copy E:\.env C:\edge_service_zkteco\dist\.env
+```
+
+Si no tienes el archivo, crealo a partir de `.env.example` y pide a soporte los valores. Revisa
+que al menos tenga bien:
+
+- `BACKEND_BASE_URL`: la URL del backend de produccion.
+- `DEVICE_TOKEN`: el token del punto de acceso de esta sucursal (en el admin de Gym System).
+- `ACCESS_MODE=rfid`
+- `ZK_DEVICE_HOST`: la IP del lector, por ejemplo `192.168.1.201`.
+
+Verifica que esten el ejecutable y el `.env`:
 
 ```bat
 dir dist\gym-edge-service-zkteco.exe dist\.env
 ```
 
-Si aparecen ambos archivos, continua.
+### Paso 5. Probar el edge manualmente una vez
 
-Si no aparecen, pide soporte porque falta copiar el ejecutable o el `.env`.
+Primero confirma que la PC llega al lector (cambia la IP por la de tu lector):
 
-### Paso 4. Probar el edge manualmente una vez
+```bat
+powershell -Command "Test-NetConnection 192.168.1.201 -Port 4370"
+```
 
-Pega esto y presiona Enter:
+Debe decir `TcpTestSucceeded : True`. Luego arranca el edge:
 
 ```bat
 dist\gym-edge-service-zkteco.exe
@@ -116,13 +135,10 @@ Al arrancar debes ver algo parecido a:
 - `Connected to ZKTeco device 192.168.x.x:4370.`
 - listener control en `9877`
 
-Si quieres cerrarlo despues de la prueba, presiona:
+Haz pasar a un miembro activo por el lector y revisa que entre. Para cerrar la prueba presiona
+`Control + C`.
 
-```bat
-Control + C
-```
-
-### Paso 5. Configurar ngrok si el backend esta en la nube
+### Paso 6. Configurar ngrok si el backend esta en la nube
 
 Si tu backend productivo esta en Railway o en otro hosting fuera de la sucursal,
 la IP local de esta PC no sera visible desde internet. En ese caso debes exponer `9877`
@@ -158,11 +174,13 @@ mi-sucursal.ngrok-free.dev
 
 Si cierras `ngrok`, la apertura remota dejara de funcionar.
 
-### Paso 6. Instalar el servicio del edge con NSSM
+### Paso 7. Instalar el servicio del edge con NSSM
 
-Asumiendo que `nssm.exe` esta en `C:\tools\nssm\nssm.exe`, pega esto:
+Abre CMD **como administrador** (clic derecho en "Símbolo del sistema" → "Ejecutar como
+administrador"), entra a la carpeta y pega:
 
 ```bat
+cd /d C:\edge_service_zkteco
 windows\install_with_nssm.bat "C:\tools\nssm\nssm.exe"
 ```
 
@@ -174,16 +192,21 @@ Servicio instalado como GymEdgeZkteco.
 
 Este servicio queda en arranque automatico y, si el proceso se cae, NSSM intentara levantarlo otra vez.
 
-### Paso 7. Instalar ngrok como servicio automatico
+### Paso 8. Instalar ngrok como servicio automatico
 
 Si tu backend esta en la nube, instala tambien `ngrok` como servicio para no depender
 de abrir una consola manualmente en cada reinicio.
 
-Asumiendo que `ngrok.exe` esta en `C:\tools\ngrok\ngrok.exe`, pega esto:
+En el CMD de administrador pega:
 
 ```bat
 windows\install_ngrok_with_nssm.bat "C:\tools\nssm\nssm.exe" "C:\tools\ngrok\ngrok.exe"
+"C:\tools\nssm\nssm.exe" set GymEdgeZktecoNgrok AppEnvironmentExtra NGROK_AUTHTOKEN=TU_AUTHTOKEN
+"C:\tools\nssm\nssm.exe" restart GymEdgeZktecoNgrok
 ```
+
+La segunda linea es necesaria: el servicio corre con la cuenta del sistema, que **no lee** el
+authtoken guardado con `ngrok config add-authtoken` en tu usuario. Sin ella el tunel no arranca.
 
 Si todo sale bien, veras un mensaje parecido a:
 
@@ -216,7 +239,7 @@ Esto corre:
 2. despues cada 24 horas por default
 3. al instante cuando el sistema renueva o vence una membresia (via apertura del backend)
 
-El sync **no borra usuarios ni caras/huellas**: solo cambia el grupo.
+El sync **no borra usuarios ni caras/huellas**: solo cambia el grupo y habilita o deshabilita al usuario.
 
 Verificacion recomendada la primera vez (con un usuario de prueba):
 
@@ -230,6 +253,22 @@ Si necesitas forzar el sync de inmediato, reinicia el servicio:
 ```bat
 windows\restart_services.bat
 ```
+
+## Como actualizar el edge
+
+Cuando haya una version nueva, en CMD **como administrador**:
+
+```bat
+cd /d C:\edge_service_zkteco
+sc stop GymEdgeZkteco
+git pull
+.venv\Scripts\pip install pyzk pyinstaller
+windows\build_windows.bat
+sc start GymEdgeZkteco
+```
+
+Hay que detener el servicio antes de construir: Windows no deja reemplazar un `.exe` que esta
+corriendo. El `dist\.env` y los logs de `dist\runtime\` se conservan.
 
 ## Como revisar si esta corriendo
 
@@ -345,6 +384,8 @@ powershell -Command "Get-Content dist\runtime\edge_zkteco.log -Tail 50"
 ```
 
 Si ves `Could not connect to ZKTeco device...` repetido, es un problema de red, IP o comm key.
+Si el lector responde en el puerto `4370` pero el edge igual no conecta, revisa que ningun otro
+programa este conectado al lector (por ejemplo ProGym): solo acepta una conexion a la vez.
 
 Si los eventos si llegan al backend pero la apertura remota no genera nada nuevo en el log del edge,
 revisa primero si `ngrok` sigue corriendo.
@@ -354,9 +395,19 @@ revisa primero si `ngrok` sigue corriendo.
 Si solo quieres la version corta, estos son los pasos:
 
 ```bat
+git clone https://github.com/miguelsd19/gym-edge-zkteco.git C:\edge_service_zkteco
 cd /d C:\edge_service_zkteco
-dir dist\gym-edge-service-zkteco.exe dist\.env
+py -3.11 -m venv .venv
+.venv\Scripts\pip install pyzk pyinstaller
+windows\build_windows.bat
+copy E:\.env dist\.env
 dist\gym-edge-service-zkteco.exe
+```
+
+Despues, en CMD como administrador:
+
+```bat
+cd /d C:\edge_service_zkteco
 windows\install_with_nssm.bat "C:\tools\nssm\nssm.exe"
 sc query GymEdgeZkteco
 ```
@@ -365,6 +416,8 @@ Si la apertura remota usara `ngrok`, instala tambien:
 
 ```bat
 windows\install_ngrok_with_nssm.bat "C:\tools\nssm\nssm.exe" "C:\tools\ngrok\ngrok.exe"
+"C:\tools\nssm\nssm.exe" set GymEdgeZktecoNgrok AppEnvironmentExtra NGROK_AUTHTOKEN=TU_AUTHTOKEN
+"C:\tools\nssm\nssm.exe" restart GymEdgeZktecoNgrok
 ```
 
 ## Datos importantes para soporte
