@@ -1,5 +1,7 @@
 # Guia Simple Para Instalar El Edge ZKTeco En Una PC Windows Nueva
 
+> Si esta instalacion la hace un agente de IA, debe leer antes [AGENTS.md](AGENTS.md).
+
 Esta guia esta pensada para que cualquier persona pueda dejar funcionando el edge del torniquete sin saber programacion.
 
 ## Que hace este edge

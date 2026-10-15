@@ -21,6 +21,10 @@ y volver a construir el ejecutable.
 Guias paso a paso: [Windows](GUIA_INSTALACION_WINDOWS.md), [macOS](GUIA_INSTALACION_MAC.md) y
 [respaldo del lector antes de migrar desde ProGym](GUIA_RESPALDO_PROGYM.md).
 
+**Si la instalacion la va a hacer un agente de IA**, que lea primero [AGENTS.md](AGENTS.md)
+(Claude Code lo carga solo desde `CLAUDE.md`): tiene el contexto del sistema, los datos verificados
+del lector de Norias, lo que no se debe hacer nunca y el orden del dia del cambio.
+
 El backend vive en el repo principal (`miguelsd19/gym-System`); el edge solo habla con su API.
 
 Es hermano del edge de Hikvision (`edge_service_hikvision/` en el repo principal); queda separado porque ZKTeco usa otro protocolo: el edge se conecta
