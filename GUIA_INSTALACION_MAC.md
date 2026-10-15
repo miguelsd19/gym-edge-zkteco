@@ -19,7 +19,7 @@ Su trabajo es:
 Necesitas estas 4 cosas:
 
 1. Una Mac conectada a la misma red que el terminal ZKTeco.
-2. La carpeta `edge_service_zkteco` ya copiada en la Mac.
+2. El codigo del edge en `/Users/Shared/edge_service_zkteco` (se clona de GitHub, ver "Paso 0").
 3. El archivo `.env` correcto para esa sucursal (con la IP del terminal en `ZK_DEVICE_HOST`).
 4. Tener abierta la Terminal de Mac.
 
@@ -38,8 +38,18 @@ Antes de instalar el edge, el terminal debe quedar asi (lo hace soporte una sola
 3. Si el terminal tiene comm key configurada, esa clave va en `ZK_DEVICE_PASSWORD`.
 4. Crear el grupo de acceso bloqueado: menu `Access Control` → `Access Groups`,
    grupo `99` **sin horario de acceso valido**. A ese grupo se mueven los miembros vencidos, que ademas quedan deshabilitados en el lector.
-5. Enrolar a los usuarios usando el mismo `User ID` que tiene el miembro en Gym System
-   (`device_user_id`).
+5. Enrolar a los usuarios usando como `User ID` el **ID biometrico** que muestra la ficha del
+   miembro en Gym System (con `ACCESS_MODE=rfid`, el campo `rfid_code`).
+
+## Paso 0. Bajar el codigo desde GitHub (solo la primera vez)
+
+```bash
+git clone https://github.com/miguelsd19/gym-edge-zkteco.git /Users/Shared/edge_service_zkteco
+```
+
+El repo es privado: Git pedira iniciar sesion con una cuenta de GitHub que tenga acceso. El `.env`
+**no viene en el repo** (lleva el `DEVICE_TOKEN`): copialo por un medio seguro o crealo desde
+`.env.example`. Para actualizar despues: `git pull` en esa carpeta, reconstruir y reiniciar.
 
 ## Carpeta que se va a usar
 

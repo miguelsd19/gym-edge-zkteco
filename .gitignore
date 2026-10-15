@@ -1,0 +1,24 @@
+# Configuracion local: lleva el DEVICE_TOKEN del punto de acceso. Nunca al repo.
+.env
+dist/.env
+
+# Datos del lector y del servicio en ejecucion (personales y biometricos)
+runtime/
+dist/runtime/
+backups/
+
+# Python / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# SO / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

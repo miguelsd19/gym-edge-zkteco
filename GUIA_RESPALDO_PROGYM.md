@@ -12,7 +12,7 @@ Hay que sacar datos de **dos lugares**:
 ## Que necesitas
 
 - Una computadora (Mac o Windows) conectada a la misma red que el lector.
-- Esta carpeta `edge_service_zkteco`.
+- El codigo del edge: `git clone https://github.com/miguelsd19/gym-edge-zkteco.git` (repo privado).
 - Python 3.9 o mas nuevo.
 - Acceso de administrador al menu del lector.
 - Tu usuario de ProGym Cloud con permisos de administrador.
@@ -32,7 +32,7 @@ Toma fotos de esas pantallas: sirven si hay que regresar a ProGym.
 En Mac abre Terminal; en Windows abre PowerShell. Entra a la carpeta:
 
 ```bash
-cd ruta/a/edge_service_zkteco
+cd ruta/a/gym-edge-zkteco
 ```
 
 Crea un entorno e instala `pyzk`:

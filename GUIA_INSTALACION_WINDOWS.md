@@ -19,7 +19,7 @@ Su trabajo es:
 Necesitas estas 5 cosas:
 
 1. Una PC Windows conectada a la misma red que el terminal ZKTeco.
-2. La carpeta `edge_service_zkteco` ya copiada en la PC.
+2. El codigo del edge en `C:\edge_service_zkteco` (se clona de GitHub, ver "Paso 0").
 3. El archivo `dist\.env` correcto para esa sucursal (con la IP del terminal en `ZK_DEVICE_HOST`).
 4. El archivo `dist\gym-edge-service-zkteco.exe`.
 5. `NSSM` descargado en la PC para instalar los servicios.
@@ -39,8 +39,32 @@ Antes de instalar el edge, el terminal debe quedar asi (lo hace soporte una sola
 3. Si el terminal tiene comm key configurada, esa clave va en `ZK_DEVICE_PASSWORD`.
 4. Crear el grupo de acceso bloqueado: menu `Access Control` → `Access Groups`,
    grupo `99` **sin horario de acceso valido**. A ese grupo se mueven los miembros vencidos, que ademas quedan deshabilitados en el lector.
-5. Enrolar a los usuarios usando el mismo `User ID` que tiene el miembro en Gym System
-   (`device_user_id`).
+5. Enrolar a los usuarios usando como `User ID` el **ID biometrico** que muestra la ficha del
+   miembro en Gym System (con `ACCESS_MODE=rfid`, el campo `rfid_code`).
+
+## Paso 0. Bajar el codigo desde GitHub (solo la primera vez)
+
+1. Instala **Git para Windows** desde https://git-scm.com/download/win (opciones por defecto).
+2. Abre `Símbolo del sistema` y clona el repo en la carpeta que usa esta guia:
+
+```bat
+git clone https://github.com/miguelsd19/gym-edge-zkteco.git C:\edge_service_zkteco
+```
+
+El repo es privado: la primera vez Git abre una ventana para iniciar sesion en GitHub con una
+cuenta que tenga acceso al repo.
+
+3. Crea el `.env`: **no viene en el repo** porque lleva el `DEVICE_TOKEN` del punto de acceso.
+   Copialo por un medio seguro (USB, gestor de contrasenas) o crealo desde `.env.example`.
+
+Para actualizar el edge mas adelante:
+
+```bat
+cd /d C:\edge_service_zkteco
+git pull
+```
+
+y vuelve a construir el ejecutable (`windows\build_windows.bat`) y reinicia el servicio.
 
 ## Carpeta que se va a usar
 

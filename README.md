@@ -2,7 +2,28 @@
 
 Servicio edge independiente para terminales ZKTeco (SpeedFace-V5L y equipos similares) del Gym System.
 
-Queda separado de `edge_service_hikvision/` porque ZKTeco usa otro protocolo: el edge se conecta
+## Instalacion rapida
+
+Este repo contiene solo el edge, para clonarlo en la PC que va junto al lector:
+
+```bash
+# Windows (CMD)
+git clone https://github.com/miguelsd19/gym-edge-zkteco.git C:\edge_service_zkteco
+# macOS
+git clone https://github.com/miguelsd19/gym-edge-zkteco.git /Users/Shared/edge_service_zkteco
+```
+
+El repo es privado: la PC necesita una cuenta de GitHub con acceso (ver la guia de instalacion).
+El `.env` **no** esta en el repo porque lleva el `DEVICE_TOKEN` del punto de acceso: se crea en la
+PC a partir de `.env.example` o se copia por un medio seguro. Para actualizar despues: `git pull`
+y volver a construir el ejecutable.
+
+Guias paso a paso: [Windows](GUIA_INSTALACION_WINDOWS.md), [macOS](GUIA_INSTALACION_MAC.md) y
+[respaldo del lector antes de migrar desde ProGym](GUIA_RESPALDO_PROGYM.md).
+
+El backend vive en el repo principal (`miguelsd19/gym-System`); el edge solo habla con su API.
+
+Es hermano del edge de Hikvision (`edge_service_hikvision/` en el repo principal); queda separado porque ZKTeco usa otro protocolo: el edge se conecta
 al terminal por TCP al puerto `4370` usando la libreria `pyzk`, recibe los eventos de
 reconocimiento en vivo y ejecuta la apertura remota por el mismo canal.
 
@@ -43,7 +64,7 @@ Ejemplo:
 ```env
 BACKEND_BASE_URL=https://tu-backend
 DEVICE_TOKEN=token-del-access-point
-ACCESS_MODE=biometric
+ACCESS_MODE=rfid
 ZK_DEVICE_HOST=192.168.1.201
 ZK_DEVICE_PORT=4370
 ZK_DEVICE_PASSWORD=0
@@ -52,8 +73,9 @@ ZK_ALLOWED_GROUP_ID=1
 ZK_BLOCKED_GROUP_ID=99
 ```
 
-Si prefieres reutilizar el `rfid_code` del miembro puedes poner `ACCESS_MODE=rfid`; el edge
-enviara el identificador a `/api/access/validate/` como `rfid_code`.
+Con `ACCESS_MODE=rfid` (recomendado) el `User ID` del lector es el **ID biometrico** que muestra la
+ficha del miembro en la app (`rfid_code`), y el edge lo envia a `/api/access/validate/`. Con
+`ACCESS_MODE=biometric` se busca en `device_user_id`, que la app no muestra ni deja editar.
 
 ## Bloqueo de miembros vencidos (sync de grupos y deshabilitado)
 
@@ -128,8 +150,9 @@ python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backup
 
 ## Ejecucion
 
+Desde la raiz de este repo:
+
 ```bash
-cd edge_service_zkteco
 pip install pyzk
 python3 -m edge_service_zkteco.main
 ```
@@ -137,7 +160,6 @@ python3 -m edge_service_zkteco.main
 ## Tests
 
 ```bash
-cd edge_service_zkteco
 python3 -m unittest discover -s tests
 ```
 
@@ -145,7 +167,7 @@ La suite corre sin `pyzk` instalado (el cliente lo importa de forma lazy y los t
 
 ## Windows
 
-1. En una PC Windows crea un entorno virtual dentro de `edge_service_zkteco`.
+1. En una PC Windows clona este repo (ver arriba) y crea un entorno virtual en su raiz.
 2. Instala las dependencias: `.venv\Scripts\pip install pyzk pyinstaller`.
 3. Ejecuta `windows\build_windows.bat`.
 4. Copia `dist\gym-edge-service-zkteco.exe` junto con tu `.env`.
@@ -153,7 +175,7 @@ La suite corre sin `pyzk` instalado (el cliente lo importa de forma lazy y los t
 6. Cuando funcione, instalalo como servicio con `windows\install_with_nssm.bat`.
 
 ```bat
-cd edge_service_zkteco
+cd /d C:\edge_service_zkteco
 py -3.11 -m venv .venv
 .venv\Scripts\pip install pyzk pyinstaller
 windows\build_windows.bat
@@ -171,7 +193,7 @@ Notas:
 
 ## macOS
 
-1. En una Mac crea un entorno virtual dentro de `edge_service_zkteco`.
+1. En una Mac clona este repo (ver arriba) y crea un entorno virtual en su raiz.
 2. Instala las dependencias: `pip install pyzk pyinstaller`.
 3. Ejecuta `macos/build_macos.sh`.
 4. Copia `dist/gym-edge-service-zkteco` junto con tu `.env`.
@@ -179,7 +201,7 @@ Notas:
 6. Cuando funcione, instalalo como servicio con `macos/install_launchd.sh`.
 
 ```bash
-cd edge_service_zkteco
+cd /Users/Shared/edge_service_zkteco
 python3 -m venv .venv
 source .venv/bin/activate
 pip install pyzk pyinstaller
