@@ -17,7 +17,8 @@ diagnosticar el edge en la PC de una sucursal. Léelo completo antes de ejecutar
   4. Expone un servidor local en `9877` para que el backend pida abrir la puerta o sincronizar
      (vía `ngrok` si el backend está en la nube).
 - La otra sucursal (Calvillo) usa un lector Hikvision con otro edge (`edge_service_hikvision/` en
-  el repo principal). No lo toques desde aquí.
+  el repo principal) y, desde el 2026-10-29, **otra instancia del backend** (se traspasó). Norias
+  y Calvillo ya no comparten backend: este edge solo habla con el de Norias. No toques Calvillo.
 
 ## Sucursal Norias (primera instalación de este edge)
 
@@ -28,7 +29,7 @@ Datos verificados el 2026-10-11/15:
 | Lector | SpeedFace-V5L, serie `SYZ8234900145`, firmware `Ver 6.60 Aug 19 2021` |
 | Red del lector | IP fija `192.168.1.201`, puerto `4370`, **sin comm key** (`ZK_DEVICE_PASSWORD=0`) |
 | Red del gimnasio | `192.168.1.x`, gateway `192.168.1.1` |
-| Backend | `https://gym-system-be-production.up.railway.app` |
+| Backend | `https://sh-fitness-norias-api.up.railway.app` (instancia propia de Norias, proyecto Railway `SH-Fitness-Norias`) |
 | Sucursal en el backend | slug `norias`, punto de acceso **"Entrada Norias"** |
 | Modo | `ACCESS_MODE=rfid` |
 | Contenido del lector | 1,412 usuarios, 1,347 huellas, 29 caras (las caras **no** se pueden descargar) |
