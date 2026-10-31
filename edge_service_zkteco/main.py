@@ -36,6 +36,23 @@ class _HealthState:
         return time.monotonic() - last_main_loop_at
 
 
+def _drain_access_events(
+    event_queue: "queue.Queue[Any]",
+    process_event: Callable[[Any], None],
+    health_state: _HealthState,
+    limit: int = 16,
+) -> None:
+    """Atiende accesos entre comandos del sync, usando el mismo socket del lector."""
+    health_state.touch()
+    for _ in range(limit):
+        try:
+            event = event_queue.get_nowait()
+        except queue.Empty:
+            break
+        process_event(event)
+        health_state.touch()
+
+
 class _FileDeviceStub:
     """
     Sustituto del ZkClient en modo file (pruebas sin hardware).
@@ -369,6 +386,9 @@ def _sync_user_roles(
     if counters["updated"]:
         device.refresh_data()
 
+    if progress_callback is not None:
+        progress_callback()
+
     logger.info(
         "ZK user role sync completed (%s). assignments=%s updated=%s unchanged=%s missing=%s skipped=%s",
         reason,
@@ -638,6 +658,41 @@ def run() -> None:
     next_user_role_sync_at = 0.0 if role_sync_supported else float("inf")
     recovery_warned = False
 
+    def service_sync_progress() -> None:
+        nonlocal next_heartbeat_log_at, next_health_report_at
+        _drain_access_events(
+            event_queue,
+            lambda event: _process_event(
+                event=event,
+                logger=logger,
+                config=config,
+                backend_api=backend_api,
+                device=device,
+                failed_attempts=failed_attempts,
+                processed_events=processed_events,
+                recent_grants=recent_grants,
+            ),
+            health_state,
+        )
+        now = time.monotonic()
+        if now >= next_heartbeat_log_at:
+            logger.info(
+                "Edge heartbeat during role sync: process alive, zk_last_success=%.1fs ago, "
+                "consecutive_failures=%s.",
+                device.seconds_since_last_success_or_started(),
+                device.consecutive_failures(),
+            )
+            next_heartbeat_log_at = now + max(config.edge_heartbeat_log_seconds, 30)
+        if now >= next_health_report_at:
+            _report_edge_health(
+                logger=logger, backend_api=backend_api, device=device,
+                is_file_mode=is_file_mode,
+            )
+            next_health_report_at = time.monotonic() + max(
+                config.edge_health_report_interval_seconds, 15,
+            )
+        health_state.touch()
+
     while True:
         health_state.touch()
         try:
@@ -740,7 +795,7 @@ def run() -> None:
                     backend_api=backend_api,
                     device=device,
                     reason=sync_reason,
-                    progress_callback=health_state.touch,
+                    progress_callback=service_sync_progress,
                 )
             except (BackendUnavailableError, ZkUnavailableError) as exc:
                 logger.warning("ZK user role sync failed (%s): %s", sync_reason, exc)
