@@ -24,6 +24,8 @@ class EdgeControlServer:
         logger: logging.Logger,
         on_open: Callable[[dict[str, Any]], dict[str, Any]],
         on_sync_user_roles: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        delete_users_path: str | None = None,
+        on_delete_users: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.bind_host = bind_host
         self.port = port
@@ -34,11 +36,19 @@ class EdgeControlServer:
             else f"/{sync_user_roles_path}"
         )
         self.sync_paths = {self.sync_user_roles_path, ZK_ROLE_SYNC_ALIAS_PATH}
+        self.delete_users_path = (
+            (delete_users_path if delete_users_path.startswith("/") else f"/{delete_users_path}")
+            if delete_users_path and on_delete_users is not None
+            else None
+        )
         self.known_paths = {self.path} | self.sync_paths
+        if self.delete_users_path:
+            self.known_paths.add(self.delete_users_path)
         self.bearer_token = bearer_token
         self.logger = logger
         self.on_open = on_open
         self.on_sync_user_roles = on_sync_user_roles
+        self.on_delete_users = on_delete_users
         self._server = ThreadingHTTPServer((bind_host, port), self._build_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -82,6 +92,8 @@ class EdgeControlServer:
                 try:
                     if self.path == outer.path:
                         response_payload = outer.on_open(payload)
+                    elif self.path == outer.delete_users_path:
+                        response_payload = outer.on_delete_users(payload)
                     elif outer.on_sync_user_roles is not None:
                         response_payload = outer.on_sync_user_roles(payload)
                     else:

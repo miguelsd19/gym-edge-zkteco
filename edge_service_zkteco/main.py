@@ -65,6 +65,9 @@ class _FileDeviceStub:
     def set_user_access(self, user: ZkUserInfo, group_id: str, disabled: bool) -> None:
         raise ZkUnavailableError("User role sync is not available in file mode.")
 
+    def delete_user(self, user: ZkUserInfo) -> None:
+        raise ZkUnavailableError("User deletion is not available in file mode.")
+
     def refresh_data(self) -> None:
         return None
 
@@ -416,6 +419,93 @@ def _handle_user_role_sync(
     }
 
 
+MAX_DELETE_USERS_PER_REQUEST = 200
+
+
+def _is_device_admin(user: ZkUserInfo) -> bool:
+    # privilege sin el bit de deshabilitado: 0 = usuario normal, otro = admin.
+    return bool(user.privilege & ~USER_DISABLED_FLAG)
+
+
+def _delete_device_users(
+    *,
+    logger: logging.Logger,
+    config: EdgeConfig,
+    device: Any,
+    user_ids: list[str],
+    reason: str,
+) -> dict[str, str]:
+    """Borra del lector los usuarios pedidos por el backend.
+
+    Devuelve el resultado por ID: deleted, not_found, protected o failed. Nunca
+    borra administradores del lector ni los IDs de ZK_PROTECTED_USER_IDS.
+    """
+    results: dict[str, str] = {}
+    users_by_id: dict[str, ZkUserInfo] = {}
+    for user in device.get_users():
+        user_id = (user.user_id or "").strip()
+        if user_id:
+            users_by_id.setdefault(user_id, user)
+
+    deleted_any = False
+    for user_id in user_ids:
+        user = users_by_id.get(user_id)
+        if user is None:
+            results[user_id] = "not_found"
+            continue
+        if user_id in config.zk_protected_user_ids or _is_device_admin(user):
+            results[user_id] = "protected"
+            logger.warning("ZK user delete refused for protected user_id=%s.", user_id)
+            continue
+        try:
+            device.delete_user(user)
+        except Exception as exc:  # noqa: BLE001
+            results[user_id] = "failed"
+            logger.warning("ZK user delete failed. user_id=%s error=%s", user_id, exc)
+            continue
+        results[user_id] = "deleted"
+        deleted_any = True
+        logger.info("ZK user deleted. user_id=%s name=%s reason=%s", user_id, user.name, reason)
+
+    if deleted_any:
+        device.refresh_data()
+    return results
+
+
+def _handle_delete_users(
+    *,
+    payload: dict[str, Any],
+    logger: logging.Logger,
+    config: EdgeConfig,
+    device: Any,
+) -> dict[str, Any]:
+    raw_user_ids = payload.get("user_ids")
+    if not isinstance(raw_user_ids, list):
+        raise ValueError("user_ids must be a list.")
+    user_ids: list[str] = []
+    for value in raw_user_ids:
+        cleaned = str(value).strip()
+        if cleaned and cleaned not in user_ids:
+            user_ids.append(cleaned)
+    if not user_ids:
+        raise ValueError("user_ids is empty.")
+    if len(user_ids) > MAX_DELETE_USERS_PER_REQUEST:
+        raise ValueError(f"Maximo {MAX_DELETE_USERS_PER_REQUEST} usuarios por solicitud.")
+
+    reason = str(payload.get("reason") or "remote-request").strip() or "remote-request"
+    results = _delete_device_users(
+        logger=logger, config=config, device=device, user_ids=user_ids, reason=reason
+    )
+    counters = {status: list(results.values()).count(status) for status in ("deleted", "not_found", "protected", "failed")}
+    logger.info("ZK user delete completed (%s). %s", reason, counters)
+    return {
+        "success": True,
+        "message": "Borrado de usuarios aplicado en ZKTeco.",
+        "results": results,
+        **counters,
+    }
+
+
 def _report_edge_health(
     *,
     logger: logging.Logger,
@@ -514,6 +604,13 @@ def run() -> None:
                 logger=logger,
                 config=config,
                 backend_api=backend_api,
+                device=device,
+            ),
+            delete_users_path=config.edge_delete_users_path,
+            on_delete_users=lambda payload: _handle_delete_users(
+                payload=payload,
+                logger=logger,
+                config=config,
                 device=device,
             ),
         )

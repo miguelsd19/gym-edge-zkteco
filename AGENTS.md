@@ -51,8 +51,11 @@ Historia que explica el estado del lector:
 
 ## Reglas que no se rompen
 
-1. **Nunca borres usuarios del lector, ni lo reinicies de fábrica, ni "limpies datos".** Las caras
-   no se pueden respaldar: si se pierden, hay que reenrolar a cada persona.
+1. **Nunca borres usuarios del lector a mano, ni lo reinicies de fábrica, ni "limpies datos".** Las
+   caras no se pueden respaldar: si se pierden, hay que reenrolar a cada persona. La única excepción
+   es el borrado que pide el backend (comando `purge_inactive_members`, socios con más de 6 meses
+   sin asistir) por la ruta `EDGE_DELETE_USERS_PATH`. Aun así, el edge nunca borra administradores
+   del lector ni los IDs de `ZK_PROTECTED_USER_IDS` (en Norias: `7001-7026,98989,99999`).
 2. **El lector acepta una sola conexión a la vez.** Antes de arrancar el edge (o la herramienta de
    respaldo), ProGym u otro programa no debe estar conectado. Si la conexión falla aunque el lector
    responde en `4370`, sospecha esto primero.

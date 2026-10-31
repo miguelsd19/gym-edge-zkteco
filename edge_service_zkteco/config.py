@@ -43,6 +43,24 @@ def _get_csv_ints(name: str) -> tuple[int, ...]:
     return tuple(int(value.strip()) for value in raw.split(",") if value.strip())
 
 
+def _get_id_set(name: str) -> frozenset[str]:
+    """IDs de usuario del lector separados por coma; acepta rangos (7001-7026)."""
+    ids: set[str] = set()
+    for chunk in os.getenv(name, "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        start, sep, end = chunk.partition("-")
+        if sep and start.strip().isdigit() and end.strip().isdigit():
+            low, high = int(start), int(end)
+            if high < low or high - low > 100_000:
+                raise ValueError(f"{name}: rango invalido '{chunk}'.")
+            ids.update(str(value) for value in range(low, high + 1))
+        else:
+            ids.add(chunk)
+    return frozenset(ids)
+
+
 def _get_optional(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
@@ -93,6 +111,8 @@ class EdgeConfig:
     edge_control_port: int
     edge_control_path: str
     edge_role_sync_path: str
+    edge_delete_users_path: str
+    zk_protected_user_ids: frozenset[str]
     zk_user_role_sync_enabled: bool
     zk_user_role_sync_interval_seconds: int
     zk_user_role_sync_backend_path: str
@@ -189,6 +209,12 @@ class EdgeConfig:
                 "/hikvision/user-role-sync",
             ).strip()
             or "/hikvision/user-role-sync",
+            edge_delete_users_path=os.getenv(
+                "EDGE_DELETE_USERS_PATH",
+                "/zkteco/users/delete",
+            ).strip()
+            or "/zkteco/users/delete",
+            zk_protected_user_ids=_get_id_set("ZK_PROTECTED_USER_IDS"),
             zk_user_role_sync_enabled=_get_bool("ZK_USER_ROLE_SYNC_ENABLED", True),
             zk_user_role_sync_interval_seconds=max(
                 300,

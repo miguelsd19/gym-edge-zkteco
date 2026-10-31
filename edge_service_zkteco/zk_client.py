@@ -155,6 +155,10 @@ class ZkClient:
             ),
         )
 
+    def delete_user(self, user: ZkUserInfo) -> None:
+        # Borra el usuario y sus templates (cara/huella) del equipo.
+        self._submit("delete_user", lambda conn: conn.delete_user(uid=user.uid))
+
     def refresh_data(self) -> None:
         self._submit("refresh_data", lambda conn: conn.refresh_data())
 
