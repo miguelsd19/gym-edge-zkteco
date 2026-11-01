@@ -362,19 +362,23 @@ def _sync_user_roles(
         # (p. ej. ProGym) bloquean asi a los vencidos, y un miembro que renueva
         # quedaria rechazado por el terminal aunque este en el grupo permitido.
         target_disabled = target_user_type == "blackList"
+        verified_group = getattr(device, "verifies_access_group", False)
+        if verified_group:
+            existing_user.group_id = device.get_access_group(existing_user)
         if (
             (existing_user.group_id or "").strip() == target_group
-            and existing_user.disabled == target_disabled
+            and (verified_group or existing_user.disabled == target_disabled)
         ):
             counters["unchanged"] += 1
             continue
 
         device.set_user_access(existing_user, target_group, target_disabled)
         existing_user.group_id = target_group
-        existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
+        if not verified_group:
+            existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
         counters["updated"] += 1
         logger.info(
-            "ZK user access updated. user_id=%s member=%s group=%s disabled=%s (%s) reason=%s",
+            "ZK user access updated. user_id=%s member=%s group=%s blocked=%s (%s) reason=%s",
             identifier,
             assignment.member_name or assignment.member_id or "-",
             target_group,

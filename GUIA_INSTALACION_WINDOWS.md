@@ -229,11 +229,21 @@ Importante:
 
 ## Bloqueo de miembros vencidos
 
+En SpeedFace con firmware 6.60, el grupo efectivo se lee con `CMD_USERGRP_RRQ`
+(21) y se escribe con `CMD_USERGRP_WRQ` (22), usando el UID interno del lector.
+El campo `group_id` del registro generico de pyzk no representa ese grupo.
+El bit de deshabilitado de `privilege` tampoco impidio la apertura en la prueba
+fisica de Norias del 2026-10-31: para este firmware se verifica el grupo efectivo
+despues de escribirlo y se conserva el registro personal, horarios y biometria.
+La prueba manual con el grupo 99 rechazo correctamente al usuario de prueba.
+Una lectura distinta del grupo pedido debe producir un error, nunca un exito.
+Los terminales antiguos de registros de 28 bytes conservan el ajuste del bit.
+
 El edge consulta al backend que miembros deben quedar permitidos o bloqueados y los mueve
 de grupo dentro del terminal ZKTeco:
 
-- miembro activo → grupo `1` (normal) y habilitado
-- miembro vencido o suspendido → grupo `99` (sin horario de acceso) y deshabilitado
+- miembro activo: grupo efectivo `1` (normal)
+- miembro vencido o suspendido: grupo efectivo `99` (sin horario de acceso)
 
 Esto corre:
 
@@ -241,7 +251,8 @@ Esto corre:
 2. despues cada 24 horas por default
 3. al instante cuando el sistema renueva o vence una membresia (via apertura del backend)
 
-El sync **no borra usuarios ni caras/huellas**: solo cambia el grupo y habilita o deshabilita al usuario.
+El sync **no borra usuarios ni caras/huellas**. En SpeedFace cambia el grupo efectivo;
+en terminales antiguos tambien ajusta el bit de habilitado/deshabilitado.
 
 Verificacion recomendada la primera vez (con un usuario de prueba):
 

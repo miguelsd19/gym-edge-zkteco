@@ -73,6 +73,30 @@ def _logger():
 
 
 class SyncUserRolesTests(unittest.TestCase):
+    def test_speedface_sync_uses_effective_group_not_generic_record(self):
+        device = _FakeDevice([_user(group_id='99', privilege=1)])
+        device.verifies_access_group = True
+        device.get_access_group = lambda user: '1'
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(),
+            backend_api=_FakeBackend([_assignment(target='blackList')]),
+            device=device, reason='test',
+        )
+        self.assertEqual(counters['updated'], 1)
+        self.assertEqual(device.set_group_calls, [('1001', '99', True)])
+
+    def test_speedface_confirmed_group_is_unchanged_regardless_of_privilege_bit(self):
+        device = _FakeDevice([_user(group_id='', privilege=0)])
+        device.verifies_access_group = True
+        device.get_access_group = lambda user: '99'
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(),
+            backend_api=_FakeBackend([_assignment(target='blackList')]),
+            device=device, reason='test',
+        )
+        self.assertEqual(counters['unchanged'], 1)
+        self.assertEqual(device.set_group_calls, [])
+
     def test_blocks_expired_member_by_moving_to_blocked_group(self):
         backend = _FakeBackend([_assignment(target="blackList")])
         device = _FakeDevice([_user(group_id="1")])

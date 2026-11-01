@@ -2,6 +2,7 @@ import queue
 import tempfile
 import time
 import unittest
+from struct import unpack
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,11 @@ class FakeConn:
         self.set_user_calls = []
         self.refresh_calls = 0
         self.disconnected = False
+        self.encoding = 'utf-8'
+        self.user_packet_size = 72
+        self.ignore_user_write = False
+        self.access_groups = {}
+        self.access_commands = []
 
     def live_capture(self, new_timeout=1.0):
         while not self.end_live_capture:
@@ -54,6 +60,32 @@ class FakeConn:
 
     def set_user(self, **kwargs):
         self.set_user_calls.append(kwargs)
+
+    def _ZK__send_command(self, command, payload, response_size):
+        self.access_commands.append((command, payload))
+        if command == 21:
+            uid = unpack('<I', payload)[0]
+            self._ZK__data = bytes([self.access_groups.get(uid, 1)])
+            return {'status': True}
+        if command == 22:
+            uid, group = unpack('<II', payload)
+            if not self.ignore_user_write:
+                self.access_groups[uid] = group
+            return {'status': True}
+        assert command == 8
+        if self.user_packet_size == 28:
+            uid, privilege, password, name, card, group, _, user_id = unpack('<HB5s8sIxBHI', payload)
+            group, user_id = str(group), str(user_id)
+        else:
+            uid, privilege, password, name, card_bytes, group, user_id = unpack('<HB8s24s4sx7sx24s', payload)
+            card = unpack('<I', card_bytes)[0]
+            group, user_id = group.rstrip(b'\0').decode(), user_id.rstrip(b'\0').decode()
+        values = dict(uid=uid, privilege=privilege, password=password.rstrip(b'\0').decode(),
+                      name=name.rstrip(b'\0').decode(), card=card, group_id=group, user_id=user_id)
+        self.set_user_calls.append(values)
+        if not self.ignore_user_write:
+            self.users = [SimpleNamespace(**values) if u.uid == uid else u for u in self.users]
+        return {'status': True}
 
     def refresh_data(self):
         self.refresh_calls += 1
@@ -239,11 +271,12 @@ class ZkClientTests(unittest.TestCase):
 
     def test_set_user_access_resends_full_user_record(self):
         conn = FakeConn()
+        conn.user_packet_size = 28
         conn.users = [
             SimpleNamespace(
                 uid=7,
                 user_id="1001",
-                name="Ana Activa",
+                name="Ana",
                 privilege=0,
                 password="pw",
                 group_id="1",
@@ -262,7 +295,7 @@ class ZkClientTests(unittest.TestCase):
             call,
             {
                 "uid": 7,
-                "name": "Ana Activa",
+                "name": "Ana",
                 "privilege": 1,
                 "password": "pw",
                 "group_id": "99",
@@ -270,6 +303,29 @@ class ZkClientTests(unittest.TestCase):
                 "card": 123,
             },
         )
+
+    def test_access_wire_formats_preserve_admin_and_verify_readback(self):
+        from edge_service_zkteco.models import ZkUserInfo
+        from edge_service_zkteco.zk_client import _write_user_access
+        for size in (28, 72):
+            with self.subTest(size=size):
+                conn = FakeConn()
+                conn.user_packet_size = size
+                user = ZkUserInfo(uid=7, user_id='1001', name='Ana', privilege=14,
+                                  password='pw', group_id='1', card=123)
+                conn.users = [user]
+                _write_user_access(conn, user, '99', 15)
+                self.assertEqual(conn.users[0].privilege, 15 if size == 28 else 14)
+                if size == 72:
+                    self.assertEqual(conn.access_groups[7], 99)
+                    self.assertEqual(conn.set_user_calls, [])
+                _write_user_access(conn, user, '1', 14)
+                self.assertEqual(conn.users[0].privilege, 14)
+                if size == 72:
+                    self.assertEqual(conn.access_groups[7], 1)
+                conn.ignore_user_write = True
+                with self.assertRaisesRegex(ZkCommandRejectedError, 'readback mismatch'):
+                    _write_user_access(conn, user, '99', 15)
 
     def test_factory_receives_connection_settings(self):
         conn = FakeConn()

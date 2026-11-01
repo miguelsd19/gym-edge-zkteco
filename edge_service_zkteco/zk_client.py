@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import socket
+from struct import pack
 import threading
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,58 @@ def _is_network_error(exc: Exception) -> bool:
     if isinstance(exc, (socket.timeout, TimeoutError, ConnectionError, BrokenPipeError, OSError)):
         return True
     return "network" in type(exc).__name__.lower()
+
+
+def _write_user_access(conn: Any, user: ZkUserInfo, group_id: str, privilege: int) -> None:
+    """Write and verify the effective access group on SpeedFace terminals.
+
+    Legacy 28-byte terminals retain the full-record disabled-bit update.
+    """
+    if conn.user_packet_size == 72:
+        # SpeedFace 6.60: the group_id bytes in CMD_USER_WRQ are not the
+        # effective access group. Use the dedicated command, without rewriting
+        # the user record (which also contains personal access schedules).
+        response = conn._ZK__send_command(22, pack('<II', user.uid, int(group_id)), 1024)
+        if not response.get('status'):
+            raise ZkCommandRejectedError('Device refused access group update.')
+        conn.refresh_data()
+        saved_group = _read_access_group(conn, user.uid)
+        if saved_group != group_id:
+            raise ZkCommandRejectedError(
+                f'Access group readback mismatch for user_id={user.user_id}: '
+                f'expected={group_id} actual={saved_group}.'
+            )
+        return
+    encoding = conn.encoding
+    if conn.user_packet_size == 28:
+        payload = pack('<HB5s8sIxBHI', user.uid, privilege,
+                       user.password.encode(encoding, errors='ignore'),
+                       user.name.encode(encoding, errors='ignore'), user.card,
+                       int(group_id or 0), 0, int(user.user_id))
+    else:
+        raise ZkCommandRejectedError('Unsupported ZK user packet size.')
+    response = conn._ZK__send_command(8, payload, 1024)
+    if not response.get('status'):
+        raise ZkCommandRejectedError('Device refused user access update.')
+    conn.refresh_data()
+    saved = next((item for item in conn.get_users() if int(item.uid) == user.uid), None)
+    if (saved is None or str(saved.user_id) != user.user_id
+            or int(saved.privilege) != privilege
+            or str(saved.group_id).strip() != group_id):
+        raise ZkCommandRejectedError(
+            f'User access readback mismatch for user_id={user.user_id}; blocking not verified.'
+        )
+
+
+def _read_access_group(conn: Any, uid: int) -> str:
+    response = conn._ZK__send_command(21, pack('<I', uid), 1024)
+    data = conn._ZK__data
+    if not response.get('status') or len(data) not in (1, 2, 4):
+        raise ZkCommandRejectedError('Cannot read effective access group.')
+    group = int.from_bytes(data, 'little')
+    if not 1 <= group <= 99:
+        raise ZkCommandRejectedError(f'Invalid effective access group: {group}.')
+    return str(group)
 
 
 class _PendingCommand:
@@ -76,6 +129,13 @@ class ZkClient:
 
     # ------------------------------------------------------------------ API
 
+    # The SpeedFace does not enforce the privilege disabled bit. A confirmed
+    # effective access group, rather than that bit, determines sync state.
+    verifies_access_group = False
+
+    def get_access_group(self, user: ZkUserInfo) -> str:
+        return self._submit('get_access_group', lambda conn: _read_access_group(conn, user.uid))
+
     def start(self) -> None:
         self._thread = threading.Thread(
             target=self._device_loop,
@@ -118,7 +178,12 @@ class ZkClient:
         raise last_error
 
     def get_users(self) -> list[ZkUserInfo]:
-        raw_users = self._submit("get_users", lambda conn: conn.get_users())
+        def read_users(conn: Any) -> Any:
+            users = conn.get_users()
+            self.verifies_access_group = conn.user_packet_size == 72
+            return users
+
+        raw_users = self._submit("get_users", read_users)
         users: list[ZkUserInfo] = []
         for user in raw_users or []:
             users.append(
@@ -144,15 +209,7 @@ class ZkClient:
             privilege |= USER_DISABLED_FLAG
         self._submit(
             "set_user",
-            lambda conn: conn.set_user(
-                uid=user.uid,
-                name=user.name,
-                privilege=privilege,
-                password=user.password,
-                group_id=str(group_id),
-                user_id=user.user_id,
-                card=user.card,
-            ),
+            lambda conn: _write_user_access(conn, user, str(group_id), privilege),
         )
 
     def delete_user(self, user: ZkUserInfo) -> None:
