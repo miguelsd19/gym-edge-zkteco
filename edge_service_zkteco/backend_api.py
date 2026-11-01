@@ -85,11 +85,16 @@ class BackendApiClient:
         status: str,
         message: str = "",
         device_last_success_at: str = "",
+        sync: dict[str, object] | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "status": status,
             "message": message,
         }
+        if sync is not None:
+            # Avance de la sincronizacion de usuarios; un backend viejo ignora
+            # la llave (DRF descarta campos desconocidos).
+            payload["sync"] = sync
         if device_last_success_at:
             # El serializer del backend expone este campo con nombre "hikvision_*"
             # pero es generico: guarda el ultimo exito de comunicacion con el
