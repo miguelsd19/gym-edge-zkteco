@@ -133,6 +133,26 @@ class BackendApiClient:
             raise BackendUnavailableError("Backend returned invalid JSON.")
         return parsed
 
+    def report_reader_sync_events(self, events: list[dict[str, object]]) -> None:
+        """Envia al backend los cambios aplicados al lector (reporte diario)."""
+        request = urllib.request.Request(
+            url=f"{self.config.backend_base_url}/api/access/reader-sync-events/",
+            data=json.dumps({"events": events}).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.config.device_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.request_timeout_seconds) as response:
+                response.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise BackendUnavailableError(f"HTTP {exc.code} while calling backend: {body}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            raise BackendUnavailableError(f"Network error while calling backend: {exc}") from exc
+
     def fetch_user_roles(
         self,
         *,
