@@ -12,6 +12,7 @@ from typing import Any, Callable
 from edge_service_zkteco.config import EdgeConfig
 from edge_service_zkteco.event_parser import event_to_dict
 from edge_service_zkteco.models import USER_DISABLED_FLAG, ZkUserInfo
+from edge_service_zkteco.zk_capture import capture_window
 
 
 class ZkUnavailableError(Exception):
@@ -444,15 +445,17 @@ class ZkClient:
             self._capture_until_interrupted(conn)
 
     def _capture_until_interrupted(self, conn: Any) -> None:
-        conn.end_live_capture = False
-        for event in conn.live_capture(new_timeout=self.config.zk_capture_poll_seconds):
-            if event is not None:
-                self._handle_event(event)
-            if self._stop.is_set() or not self._commands.empty() or self._keepalive_due():
-                conn.end_live_capture = True
+        capture_window(
+            conn, on_event=self._handle_event,
+            should_yield=lambda: not self._commands.empty() or self._keepalive_due(),
+            stopped=self._stop.is_set,
+            poll_seconds=self.config.zk_capture_poll_seconds,
+            min_seconds=getattr(self.config, 'zk_capture_min_window_seconds', 0.5),
+            logger=self.logger,
+        )
 
     def _execute_pending(self, conn: Any) -> None:
-        while True:
+        for _ in range(getattr(self.config, 'zk_command_batch_size', 4)):
             try:
                 command = self._commands.get_nowait()
             except queue.Empty:

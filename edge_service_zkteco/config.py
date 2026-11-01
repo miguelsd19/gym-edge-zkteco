@@ -94,6 +94,8 @@ class EdgeConfig:
     zk_force_udp: bool
     zk_omit_ping: bool
     zk_capture_poll_seconds: float
+    zk_capture_min_window_seconds: float
+    zk_command_batch_size: int
     zk_keepalive_seconds: float
     zk_reconnect_max_backoff_seconds: float
     zk_command_timeout_seconds: float
@@ -175,6 +177,8 @@ class EdgeConfig:
             zk_force_udp=_get_bool("ZK_FORCE_UDP", False),
             zk_omit_ping=_get_bool("ZK_OMIT_PING", True),
             zk_capture_poll_seconds=max(0.2, _get_float("ZK_CAPTURE_POLL_SECONDS", 1.0)),
+            zk_capture_min_window_seconds=max(0.1, _get_float("ZK_CAPTURE_MIN_WINDOW_SECONDS", 0.5)),
+            zk_command_batch_size=max(1, _get_int("ZK_COMMAND_BATCH_SIZE", 4)),
             zk_keepalive_seconds=max(5.0, _get_float("ZK_KEEPALIVE_SECONDS", 30.0)),
             zk_reconnect_max_backoff_seconds=max(
                 1.0,

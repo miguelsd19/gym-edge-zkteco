@@ -2,7 +2,8 @@ import queue
 import tempfile
 import time
 import unittest
-from struct import unpack
+from struct import unpack, pack
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,29 @@ from edge_service_zkteco.zk_client import (
 
 class _FakeRejectedResponse(Exception):
     """Simula ZKErrorResponse: el equipo responde pero rechaza el comando."""
+
+
+class FakeEventSocket:
+    def __init__(self, conn):
+        self.conn = conn
+        self.timeout = 1.0
+
+    def gettimeout(self):
+        return self.timeout
+
+    def settimeout(self, value):
+        self.timeout = value
+
+    def recv(self, size):
+        try:
+            event = self.conn.pending_events.get(timeout=min(self.timeout, 0.005))
+        except queue.Empty:
+            raise socket.timeout()
+        if isinstance(event, bytes):
+            return event
+        payload = pack('<24sBB6B', event.user_id.encode(), event.status, event.punch, 26, 10, 31, 20, 0, 0)
+        packet = pack('<4H', 500, 0, 0, 0) + payload
+        return pack('<HHI', 0x5050, 0x7d82, len(packet)) + packet
 
 
 class FakeConn:
@@ -35,14 +59,31 @@ class FakeConn:
         self.ignore_user_write = False
         self.access_groups = {}
         self.access_commands = []
+        self._ZK__sock = FakeEventSocket(self)
+        self.tcp = True
+        self.is_enabled = True
+        self.event_flags = []
+
+    def cancel_capture(self):
+        pass
+
+    def verify_user(self):
+        pass
+
+    def reg_event(self, flags):
+        self.event_flags.append(flags)
+
+    def enable_device(self):
+        self.is_enabled = True
+
+    def disable_device(self):
+        self.is_enabled = False
+
+    def _ZK__ack_ok(self):
+        pass
 
     def live_capture(self, new_timeout=1.0):
-        while not self.end_live_capture:
-            try:
-                event = self.pending_events.get(timeout=0.005)
-            except queue.Empty:
-                event = None
-            yield event
+        raise AssertionError('The client must not use pyzk.live_capture')
 
     def unlock(self, time=3):
         self.unlock_calls.append(time)
@@ -131,6 +172,28 @@ class _SilentLogger:
 
 
 class ZkClientTests(unittest.TestCase):
+    def test_command_batch_and_listen_window_prevent_capture_starvation(self):
+        from edge_service_zkteco.zk_client import _PendingCommand
+        from tests.test_zk_capture import frame, attendance
+        config = self._build_config(zk_capture_min_window_seconds=0.04)
+        client = ZkClient(config, _SilentLogger(), self.received_events.put)
+        conn = FakeConn()
+        calls = []
+        conn.get_users = lambda: self.fail('Capture must not download users')
+        for n in range(7):
+            client._commands.put(_PendingCommand('test', lambda c, n=n: calls.append(n)))
+        client._execute_pending(conn)
+        self.assertEqual(calls, [0, 1, 2, 3])
+        self.assertEqual(client._commands.qsize(), 3)
+        conn.pending_events.put(frame(attendance('1001')) + frame(attendance('2002')))
+        began = time.monotonic()
+        client._capture_until_interrupted(conn)
+        self.assertGreaterEqual(time.monotonic()-began, 0.04)
+        self.assertEqual([self.received_events.get_nowait().user_id for _ in range(2)], ['1001', '2002'])
+        client._execute_pending(conn)
+        self.assertEqual(calls, list(range(7)))
+        self.assertEqual(conn.event_flags[-1], 0)
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -150,6 +213,8 @@ class ZkClientTests(unittest.TestCase):
             "zk_force_udp": False,
             "zk_omit_ping": True,
             "zk_capture_poll_seconds": 0.01,
+            "zk_capture_min_window_seconds": 0.01,
+            "zk_command_batch_size": 4,
             "zk_keepalive_seconds": 999.0,
             "zk_reconnect_max_backoff_seconds": 0.05,
             "zk_command_timeout_seconds": 2.0,
