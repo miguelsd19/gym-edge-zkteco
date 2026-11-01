@@ -21,6 +21,9 @@ from edge_service_zkteco.state_store import ProcessedEventStore
 from edge_service_zkteco.zk_client import ZkClient, ZkCommandRejectedError, ZkUnavailableError
 
 
+_ROLE_SYNC_LOCK = threading.RLock()
+
+
 class _HealthState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -308,6 +311,17 @@ def _sync_user_roles(
     if not config.zk_user_role_sync_enabled:
         return counters
 
+    # A targeted renewal/activation supersedes any older full-sync snapshot.
+    # Serialize each user's check/write with revision changes so a stale write
+    # cannot land after a newer member update has completed.
+    with _ROLE_SYNC_LOCK:
+        revision = getattr(device, "_role_sync_revision", 0) + 1
+        device._role_sync_revision = revision
+        revisions = getattr(device, "_role_sync_revisions", {})
+        for member_id in member_ids or ["*"]:
+            revisions[member_id] = revision
+        device._role_sync_revisions = revisions
+
     if progress_callback is not None:
         progress_callback()
     assignments = backend_api.fetch_user_roles(member_ids=member_ids)
@@ -329,77 +343,82 @@ def _sync_user_roles(
     for assignment in assignments:
         if progress_callback is not None:
             progress_callback()
-        target_user_type = (assignment.target_user_type or "").strip()
-        if target_user_type not in {"normal", "blackList"}:
-            counters["skipped"] += 1
-            continue
-
-        identifier = _identifier_for_assignment(
-            assignment=assignment,
-            access_mode=config.access_mode,
-        ).strip()
-        if not identifier:
-            counters["skipped"] += 1
-            continue
-
-        existing_user = users_by_id.get(identifier)
-        if existing_user is None:
-            counters["missing"] += 1
-            logger.warning(
-                "ZK user role sync could not find user_id=%s member=%s target=%s.",
-                identifier,
-                assignment.member_name or assignment.member_id or "-",
-                target_user_type,
-            )
-            continue
-
-        target_group = (
-            config.zk_allowed_group_id
-            if target_user_type == "normal"
-            else config.zk_blocked_group_id
-        )
-        # Ademas del grupo se ajusta el bit de deshabilitado: otros sistemas
-        # (p. ej. ProGym) bloquean asi a los vencidos, y un miembro que renueva
-        # quedaria rechazado por el terminal aunque este en el grupo permitido.
-        target_disabled = target_user_type == "blackList"
-        verified_group = getattr(device, "verifies_access_group", False)
-        try:
-            if verified_group:
-                existing_user.group_id = device.get_access_group(existing_user)
-            if (
-                (existing_user.group_id or "").strip() == target_group
-                and (verified_group or existing_user.disabled == target_disabled)
-            ):
-                counters["unchanged"] += 1
+        with _ROLE_SYNC_LOCK:
+            if max(revisions.get("*", 0), revisions.get(assignment.member_id, 0)) > revision:
+                counters["skipped"] += 1
+                logger.info("ZK user role sync skipped superseded assignment. member_id=%s", assignment.member_id)
+                continue
+            target_user_type = (assignment.target_user_type or "").strip()
+            if target_user_type not in {"normal", "blackList"}:
+                counters["skipped"] += 1
                 continue
 
-            device.set_user_access(existing_user, target_group, target_disabled)
-        except ZkCommandRejectedError as exc:
-            # El lector respondio pero rechazo o no confirmo el cambio de este
-            # socio: se registra y se sigue con los demas. Un error de red
-            # (ZkUnavailableError) si detiene la sincronizacion.
-            counters["failed"] += 1
-            logger.warning(
-                "ZK user access not confirmed. user_id=%s member=%s target=%s error=%s",
+            identifier = _identifier_for_assignment(
+                assignment=assignment,
+                access_mode=config.access_mode,
+            ).strip()
+            if not identifier:
+                counters["skipped"] += 1
+                continue
+
+            existing_user = users_by_id.get(identifier)
+            if existing_user is None:
+                counters["missing"] += 1
+                logger.warning(
+                    "ZK user role sync could not find user_id=%s member=%s target=%s.",
+                    identifier,
+                    assignment.member_name or assignment.member_id or "-",
+                    target_user_type,
+                )
+                continue
+
+            target_group = (
+                config.zk_allowed_group_id
+                if target_user_type == "normal"
+                else config.zk_blocked_group_id
+            )
+            # Ademas del grupo se ajusta el bit de deshabilitado: otros sistemas
+            # (p. ej. ProGym) bloquean asi a los vencidos, y un miembro que renueva
+            # quedaria rechazado por el terminal aunque este en el grupo permitido.
+            target_disabled = target_user_type == "blackList"
+            verified_group = getattr(device, "verifies_access_group", False)
+            try:
+                if verified_group:
+                    existing_user.group_id = device.get_access_group(existing_user)
+                if (
+                    (existing_user.group_id or "").strip() == target_group
+                    and (verified_group or existing_user.disabled == target_disabled)
+                ):
+                    counters["unchanged"] += 1
+                    continue
+
+                device.set_user_access(existing_user, target_group, target_disabled)
+            except ZkCommandRejectedError as exc:
+                # El lector respondio pero rechazo o no confirmo el cambio de este
+                # socio: se registra y se sigue con los demas. Un error de red
+                # (ZkUnavailableError) si detiene la sincronizacion.
+                counters["failed"] += 1
+                logger.warning(
+                    "ZK user access not confirmed. user_id=%s member=%s target=%s error=%s",
+                    identifier,
+                    assignment.member_name or assignment.member_id or "-",
+                    target_user_type,
+                    exc,
+                )
+                continue
+            existing_user.group_id = target_group
+            if not verified_group:
+                existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
+            counters["updated"] += 1
+            logger.info(
+                "ZK user access updated. user_id=%s member=%s group=%s blocked=%s (%s) reason=%s",
                 identifier,
                 assignment.member_name or assignment.member_id or "-",
+                target_group,
+                target_disabled,
                 target_user_type,
-                exc,
+                assignment.reason or "-",
             )
-            continue
-        existing_user.group_id = target_group
-        if not verified_group:
-            existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
-        counters["updated"] += 1
-        logger.info(
-            "ZK user access updated. user_id=%s member=%s group=%s blocked=%s (%s) reason=%s",
-            identifier,
-            assignment.member_name or assignment.member_id or "-",
-            target_group,
-            target_disabled,
-            target_user_type,
-            assignment.reason or "-",
-        )
 
     if counters["updated"]:
         device.refresh_data()

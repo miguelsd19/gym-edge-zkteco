@@ -73,6 +73,31 @@ def _logger():
 
 
 class SyncUserRolesTests(unittest.TestCase):
+    def test_newer_activation_supersedes_old_full_sync_snapshot(self):
+        device = _FakeDevice([_user(group_id='99', privilege=1)])
+        old_backend = _FakeBackend([_assignment(target='blackList')])
+        activated = False
+
+        def activate_after_snapshot():
+            nonlocal activated
+            if old_backend.member_ids_calls and not activated:
+                activated = True
+                _handle_user_role_sync(
+                    payload={'member_ids': ['1'], 'reason': 'member-updated'},
+                    logger=_logger(), config=_config(),
+                    backend_api=_FakeBackend([_assignment(target='normal')]),
+                    device=device,
+                )
+
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(), backend_api=old_backend,
+            device=device, reason='startup', progress_callback=activate_after_snapshot,
+        )
+        self.assertTrue(activated)
+        self.assertEqual(device.set_group_calls, [('1001', '1', False)])
+        self.assertEqual(counters['skipped'], 1)
+        self.assertEqual(counters['updated'], 0)
+
     def test_speedface_sync_uses_effective_group_not_generic_record(self):
         device = _FakeDevice([_user(group_id='99', privilege=1)])
         device.verifies_access_group = True
