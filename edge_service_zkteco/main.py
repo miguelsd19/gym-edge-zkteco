@@ -56,6 +56,77 @@ def _drain_access_events(
         health_state.touch()
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class _SyncProgress:
+    """Avance de la sincronizacion completa de usuarios, para reportarlo al backend.
+
+    Solo lo actualizan los syncs completos (al arrancar, programados o pedidos
+    sin member_ids); los inmediatos de un socio no mueven la barra. Lo escribe
+    el hilo que sincroniza y lo lee el reporte de salud.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running = False
+        self._reason = ""
+        self._processed = 0
+        self._total = 0
+        self._started_at = ""
+        self._started_monotonic = 0.0
+        self._last_completed_at = ""
+        self._last_duration_seconds = 0
+        self._last_counters: dict[str, int] = {}
+        self._last_error = ""
+
+    def start(self, reason: str) -> None:
+        with self._lock:
+            self._running = True
+            self._reason = reason
+            self._processed = 0
+            self._total = 0
+            self._started_at = _utc_now_iso()
+            self._started_monotonic = time.monotonic()
+
+    def set_total(self, total: int) -> None:
+        with self._lock:
+            self._total = max(0, int(total))
+
+    def step(self) -> None:
+        with self._lock:
+            self._processed += 1
+
+    def finish(self, counters: dict[str, int]) -> None:
+        with self._lock:
+            self._running = False
+            self._processed = self._total
+            self._last_completed_at = _utc_now_iso()
+            self._last_duration_seconds = int(time.monotonic() - self._started_monotonic)
+            self._last_counters = {key: int(value) for key, value in counters.items()}
+            self._last_error = ""
+
+    def fail(self, exc: BaseException) -> None:
+        with self._lock:
+            self._running = False
+            self._last_error = str(exc)[:200]
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "running": self._running,
+                "reason": self._reason,
+                "processed": self._processed,
+                "total": self._total,
+                "started_at": self._started_at,
+                "last_completed_at": self._last_completed_at,
+                "last_duration_seconds": self._last_duration_seconds,
+                "last_counters": dict(self._last_counters),
+                "last_error": self._last_error,
+            }
+
+
 class _FileDeviceStub:
     """
     Sustituto del ZkClient en modo file (pruebas sin hardware).
@@ -306,6 +377,45 @@ def _sync_user_roles(
     reason: str,
     member_ids: list[str] | None = None,
     progress_callback: Callable[[], None] | None = None,
+    sync_progress: _SyncProgress | None = None,
+) -> dict[str, int]:
+    tracking = (
+        sync_progress is not None
+        and member_ids is None
+        and config.zk_user_role_sync_enabled
+    )
+    if tracking:
+        sync_progress.start(reason)
+    try:
+        counters = _run_user_role_sync(
+            logger=logger,
+            config=config,
+            backend_api=backend_api,
+            device=device,
+            reason=reason,
+            member_ids=member_ids,
+            progress_callback=progress_callback,
+            sync_progress=sync_progress if tracking else None,
+        )
+    except Exception as exc:
+        if tracking:
+            sync_progress.fail(exc)
+        raise
+    if tracking:
+        sync_progress.finish(counters)
+    return counters
+
+
+def _run_user_role_sync(
+    *,
+    logger: logging.Logger,
+    config: EdgeConfig,
+    backend_api: BackendApiClient,
+    device: Any,
+    reason: str,
+    member_ids: list[str] | None,
+    progress_callback: Callable[[], None] | None,
+    sync_progress: _SyncProgress | None,
 ) -> dict[str, int]:
     counters = {"assignments": 0, "updated": 0, "unchanged": 0, "missing": 0, "skipped": 0, "failed": 0}
     if not config.zk_user_role_sync_enabled:
@@ -326,6 +436,8 @@ def _sync_user_roles(
         progress_callback()
     assignments = backend_api.fetch_user_roles(member_ids=member_ids)
     counters["assignments"] = len(assignments)
+    if sync_progress is not None:
+        sync_progress.set_total(len(assignments))
     if progress_callback is not None:
         progress_callback()
 
@@ -341,6 +453,8 @@ def _sync_user_roles(
         users_by_id.setdefault(str(user.uid), user)
 
     for assignment in assignments:
+        if sync_progress is not None:
+            sync_progress.step()
         if progress_callback is not None:
             progress_callback()
         with _ROLE_SYNC_LOCK:
@@ -450,6 +564,7 @@ def _handle_user_role_sync(
     config: EdgeConfig,
     backend_api: BackendApiClient,
     device: Any,
+    sync_progress: _SyncProgress | None = None,
 ) -> dict[str, Any]:
     raw_member_ids = payload.get("member_ids", [])
     member_ids: list[str] = []
@@ -471,6 +586,7 @@ def _handle_user_role_sync(
         device=device,
         reason=sync_reason,
         member_ids=member_ids or None,
+        sync_progress=sync_progress,
     )
     return {
         "success": True,
@@ -574,6 +690,7 @@ def _report_edge_health(
     backend_api: BackendApiClient,
     device: Any,
     is_file_mode: bool,
+    sync_progress: _SyncProgress | None = None,
 ) -> None:
     status_value, message, last_success_at = _build_edge_health_payload(
         device=device,
@@ -584,6 +701,7 @@ def _report_edge_health(
             status=status_value,
             message=message,
             device_last_success_at=last_success_at,
+            sync=sync_progress.snapshot() if sync_progress is not None else None,
         )
     except BackendUnavailableError as exc:
         logger.warning("Failed to report edge health to backend: %s", exc)
@@ -630,6 +748,7 @@ def run() -> None:
     processed_events = ProcessedEventStore(config.zk_state_file)
     recent_grants: dict[str, float] = {}
     health_state = _HealthState()
+    sync_progress = _SyncProgress()
     _start_watchdog(logger=logger, config=config, health_state=health_state)
 
     event_queue: "queue.Queue[Any]" = queue.Queue()
@@ -667,6 +786,7 @@ def run() -> None:
                 config=config,
                 backend_api=backend_api,
                 device=device,
+                sync_progress=sync_progress,
             ),
             delete_users_path=config.edge_delete_users_path,
             on_delete_users=lambda payload: _handle_delete_users(
@@ -728,7 +848,7 @@ def run() -> None:
         if now >= next_health_report_at:
             _report_edge_health(
                 logger=logger, backend_api=backend_api, device=device,
-                is_file_mode=is_file_mode,
+                is_file_mode=is_file_mode, sync_progress=sync_progress,
             )
             next_health_report_at = time.monotonic() + max(
                 config.edge_health_report_interval_seconds, 15,
@@ -822,6 +942,7 @@ def run() -> None:
                 backend_api=backend_api,
                 device=device,
                 is_file_mode=is_file_mode,
+                sync_progress=sync_progress,
             )
             next_health_report_at = time.monotonic() + max(
                 config.edge_health_report_interval_seconds,
@@ -838,6 +959,7 @@ def run() -> None:
                     device=device,
                     reason=sync_reason,
                     progress_callback=service_sync_progress,
+                    sync_progress=sync_progress,
                 )
             except (BackendUnavailableError, ZkUnavailableError) as exc:
                 logger.warning("ZK user role sync failed (%s): %s", sync_reason, exc)
