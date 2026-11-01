@@ -157,7 +157,7 @@ python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backup
 Desde la raiz de este repo:
 
 ```bash
-pip install pyzk
+pip install pyzk==0.9
 python3 -m edge_service_zkteco.main
 ```
 
@@ -172,7 +172,7 @@ La suite corre sin `pyzk` instalado (el cliente lo importa de forma lazy y los t
 ## Windows
 
 1. En una PC Windows clona este repo (ver arriba) y crea un entorno virtual en su raiz.
-2. Instala las dependencias: `.venv\Scripts\pip install pyzk pyinstaller`.
+2. Instala las dependencias: `.venv\Scripts\pip install pyzk==0.9 pyinstaller`.
 3. Ejecuta `windows\build_windows.bat`.
 4. Copia `dist\gym-edge-service-zkteco.exe` junto con tu `.env`.
 5. Ejecutalo manualmente una vez para validar red, logs y apertura.
@@ -181,7 +181,7 @@ La suite corre sin `pyzk` instalado (el cliente lo importa de forma lazy y los t
 ```bat
 cd /d C:\edge_service_zkteco
 py -3.11 -m venv .venv
-.venv\Scripts\pip install pyzk pyinstaller
+.venv\Scripts\pip install pyzk==0.9 pyinstaller
 windows\build_windows.bat
 copy .env dist\.env
 dist\gym-edge-service-zkteco.exe
@@ -198,7 +198,7 @@ Notas:
 ## macOS
 
 1. En una Mac clona este repo (ver arriba) y crea un entorno virtual en su raiz.
-2. Instala las dependencias: `pip install pyzk pyinstaller`.
+2. Instala las dependencias: `pip install pyzk==0.9 pyinstaller`.
 3. Ejecuta `macos/build_macos.sh`.
 4. Copia `dist/gym-edge-service-zkteco` junto con tu `.env`.
 5. Ejecutalo manualmente una vez para validar red, logs y apertura.
@@ -208,7 +208,7 @@ Notas:
 cd /Users/Shared/edge_service_zkteco
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pyzk pyinstaller
+pip install pyzk==0.9 pyinstaller
 ./macos/build_macos.sh
 cp .env dist/.env
 ./dist/gym-edge-service-zkteco

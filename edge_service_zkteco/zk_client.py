@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import socket
+from struct import pack
 import threading
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,58 @@ def _is_network_error(exc: Exception) -> bool:
     if isinstance(exc, (socket.timeout, TimeoutError, ConnectionError, BrokenPipeError, OSError)):
         return True
     return "network" in type(exc).__name__.lower()
+
+
+def _write_user_access(conn: Any, user: ZkUserInfo, group_id: str, privilege: int) -> None:
+    """Write and verify the effective access group on SpeedFace terminals.
+
+    Legacy 28-byte terminals retain the full-record disabled-bit update.
+    """
+    if conn.user_packet_size == 72:
+        # SpeedFace 6.60: the group_id bytes in CMD_USER_WRQ are not the
+        # effective access group. Use the dedicated command, without rewriting
+        # the user record (which also contains personal access schedules).
+        response = conn._ZK__send_command(22, pack('<II', user.uid, int(group_id)), 1024)
+        if not response.get('status'):
+            raise ZkCommandRejectedError('Device refused access group update.')
+        conn.refresh_data()
+        saved_group = _read_access_group(conn, user.uid)
+        if saved_group != group_id:
+            raise ZkCommandRejectedError(
+                f'Access group readback mismatch for user_id={user.user_id}: '
+                f'expected={group_id} actual={saved_group}.'
+            )
+        return
+    encoding = conn.encoding
+    if conn.user_packet_size == 28:
+        payload = pack('<HB5s8sIxBHI', user.uid, privilege,
+                       user.password.encode(encoding, errors='ignore'),
+                       user.name.encode(encoding, errors='ignore'), user.card,
+                       int(group_id or 0), 0, int(user.user_id))
+    else:
+        raise ZkCommandRejectedError('Unsupported ZK user packet size.')
+    response = conn._ZK__send_command(8, payload, 1024)
+    if not response.get('status'):
+        raise ZkCommandRejectedError('Device refused user access update.')
+    conn.refresh_data()
+    saved = next((item for item in conn.get_users() if int(item.uid) == user.uid), None)
+    if (saved is None or str(saved.user_id) != user.user_id
+            or int(saved.privilege) != privilege
+            or str(saved.group_id).strip() != group_id):
+        raise ZkCommandRejectedError(
+            f'User access readback mismatch for user_id={user.user_id}; blocking not verified.'
+        )
+
+
+def _read_access_group(conn: Any, uid: int) -> str:
+    response = conn._ZK__send_command(21, pack('<I', uid), 1024)
+    data = conn._ZK__data
+    if not response.get('status') or len(data) not in (1, 2, 4):
+        raise ZkCommandRejectedError('Cannot read effective access group.')
+    group = int.from_bytes(data, 'little')
+    if not 1 <= group <= 99:
+        raise ZkCommandRejectedError(f'Invalid effective access group: {group}.')
+    return str(group)
 
 
 class _PendingCommand:
@@ -72,9 +125,101 @@ class ZkClient:
         self._last_success_at = ""
         self._consecutive_failures = 0
         self._event_log_lock = threading.Lock()
+        # Grupo efectivo confirmado por UID: {uid: (user_id, grupo, epoch)}.
+        # Evita leer del lector el grupo de cada socio en cada sincronizacion;
+        # se guarda en disco para que un reinicio de la PC no obligue a releer
+        # a todos. Usa hora de reloj (no monotonic) porque sobrevive reinicios.
+        self._access_group_cache_lock = threading.Lock()
+        self._access_group_cache_dirty = False
+        self._access_group_cache_saved_at = time.monotonic()
+        self._access_group_cache: dict[int, tuple[str, str, float]] = self._load_access_group_cache()
         self.config.zk_event_log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ API
+
+    # The SpeedFace does not enforce the privilege disabled bit. A confirmed
+    # effective access group, rather than that bit, determines sync state.
+    verifies_access_group = False
+
+    def get_access_group(self, user: ZkUserInfo) -> str:
+        cached = self._cached_access_group(user)
+        if cached is not None:
+            return cached
+        group = self._submit('get_access_group', lambda conn: _read_access_group(conn, user.uid))
+        self._remember_access_group(user, group)
+        return group
+
+    def save_access_group_cache(self) -> None:
+        """Escribe la cache en disco si cambio (al terminar cada sincronizacion)."""
+        path = self._access_group_cache_path()
+        if path is None:
+            return
+        with self._access_group_cache_lock:
+            if not self._access_group_cache_dirty:
+                return
+            payload = {
+                str(uid): {"user_id": user_id, "group": group, "confirmed_at": confirmed_at}
+                for uid, (user_id, group, confirmed_at) in self._access_group_cache.items()
+            }
+            self._access_group_cache_dirty = False
+            self._access_group_cache_saved_at = time.monotonic()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            self.logger.warning("Could not save ZK access group cache: %s", exc)
+
+    def _access_group_cache_path(self):
+        return getattr(self.config, "zk_access_group_cache_file", None)
+
+    def _access_group_cache_ttl(self) -> int:
+        return getattr(self.config, "zk_access_group_cache_seconds", 21600)
+
+    def _load_access_group_cache(self) -> dict[int, tuple[str, str, float]]:
+        path = self._access_group_cache_path()
+        if path is None or self._access_group_cache_ttl() <= 0 or not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            now = time.time()
+            cache = {}
+            for uid, entry in raw.items():
+                confirmed_at = float(entry["confirmed_at"])
+                if 0 <= now - confirmed_at < self._access_group_cache_ttl():
+                    cache[int(uid)] = (str(entry["user_id"]), str(entry["group"]), confirmed_at)
+            return cache
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            # Cache corrupta: se ignora y el edge vuelve a leer del lector.
+            self.logger.warning("Ignoring unreadable ZK access group cache: %s", exc)
+            return {}
+
+    def _cached_access_group(self, user: ZkUserInfo) -> str | None:
+        ttl = self._access_group_cache_ttl()
+        with self._access_group_cache_lock:
+            entry = self._access_group_cache.get(user.uid)
+        if entry is None or ttl <= 0:
+            return None
+        user_id, group, confirmed_at = entry
+        # Si el UID ahora es de otra persona (re-enrolamiento), no vale.
+        if user_id != user.user_id or not 0 <= time.time() - confirmed_at < ttl:
+            return None
+        return group
+
+    def _remember_access_group(self, user: ZkUserInfo, group: str | None) -> None:
+        with self._access_group_cache_lock:
+            if group is None:
+                if self._access_group_cache.pop(user.uid, None) is not None:
+                    self._access_group_cache_dirty = True
+            else:
+                self._access_group_cache[user.uid] = (user.user_id, group, time.time())
+                self._access_group_cache_dirty = True
+            save_due = time.monotonic() - self._access_group_cache_saved_at >= 60
+        # Guardado periodico durante un sync largo: un apagon a la mitad no
+        # obliga a releer a todos los ya confirmados.
+        if save_due:
+            self.save_access_group_cache()
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -118,7 +263,12 @@ class ZkClient:
         raise last_error
 
     def get_users(self) -> list[ZkUserInfo]:
-        raw_users = self._submit("get_users", lambda conn: conn.get_users())
+        def read_users(conn: Any) -> Any:
+            users = conn.get_users()
+            self.verifies_access_group = conn.user_packet_size == 72
+            return users
+
+        raw_users = self._submit("get_users", read_users)
         users: list[ZkUserInfo] = []
         for user in raw_users or []:
             users.append(
@@ -142,22 +292,24 @@ class ZkClient:
         privilege = user.privilege & ~USER_DISABLED_FLAG
         if disabled:
             privilege |= USER_DISABLED_FLAG
-        self._submit(
-            "set_user",
-            lambda conn: conn.set_user(
-                uid=user.uid,
-                name=user.name,
-                privilege=privilege,
-                password=user.password,
-                group_id=str(group_id),
-                user_id=user.user_id,
-                card=user.card,
-            ),
-        )
+        try:
+            self._submit(
+                "set_user",
+                lambda conn: _write_user_access(conn, user, str(group_id), privilege),
+            )
+        except Exception:
+            # Estado incierto: la siguiente sincronizacion vuelve a leerlo.
+            self._remember_access_group(user, None)
+            raise
+        if self.verifies_access_group:
+            # _write_user_access ya verifico el grupo leyendolo del lector.
+            self._remember_access_group(user, str(group_id))
 
     def delete_user(self, user: ZkUserInfo) -> None:
         # Borra el usuario y sus templates (cara/huella) del equipo.
         self._submit("delete_user", lambda conn: conn.delete_user(uid=user.uid))
+        self._remember_access_group(user, None)
+        self.save_access_group_cache()
 
     def refresh_data(self) -> None:
         self._submit("refresh_data", lambda conn: conn.refresh_data())

@@ -73,6 +73,98 @@ def _logger():
 
 
 class SyncUserRolesTests(unittest.TestCase):
+    def test_newer_activation_supersedes_old_full_sync_snapshot(self):
+        device = _FakeDevice([_user(group_id='99', privilege=1)])
+        old_backend = _FakeBackend([_assignment(target='blackList')])
+        activated = False
+
+        def activate_after_snapshot():
+            nonlocal activated
+            if old_backend.member_ids_calls and not activated:
+                activated = True
+                _handle_user_role_sync(
+                    payload={'member_ids': ['1'], 'reason': 'member-updated'},
+                    logger=_logger(), config=_config(),
+                    backend_api=_FakeBackend([_assignment(target='normal')]),
+                    device=device,
+                )
+
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(), backend_api=old_backend,
+            device=device, reason='startup', progress_callback=activate_after_snapshot,
+        )
+        self.assertTrue(activated)
+        self.assertEqual(device.set_group_calls, [('1001', '1', False)])
+        self.assertEqual(counters['skipped'], 1)
+        self.assertEqual(counters['updated'], 0)
+
+    def test_speedface_sync_uses_effective_group_not_generic_record(self):
+        device = _FakeDevice([_user(group_id='99', privilege=1)])
+        device.verifies_access_group = True
+        device.get_access_group = lambda user: '1'
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(),
+            backend_api=_FakeBackend([_assignment(target='blackList')]),
+            device=device, reason='test',
+        )
+        self.assertEqual(counters['updated'], 1)
+        self.assertEqual(device.set_group_calls, [('1001', '99', True)])
+
+    def test_speedface_confirmed_group_is_unchanged_regardless_of_privilege_bit(self):
+        device = _FakeDevice([_user(group_id='', privilege=0)])
+        device.verifies_access_group = True
+        device.get_access_group = lambda user: '99'
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(),
+            backend_api=_FakeBackend([_assignment(target='blackList')]),
+            device=device, reason='test',
+        )
+        self.assertEqual(counters['unchanged'], 1)
+        self.assertEqual(device.set_group_calls, [])
+
+    def test_unconfirmed_user_is_counted_failed_and_sync_continues(self):
+        from edge_service_zkteco.zk_client import ZkCommandRejectedError
+
+        device = _FakeDevice([_user(uid=1, user_id="1001"), _user(uid=2, user_id="1002")])
+        device.verifies_access_group = True
+        device.get_access_group = lambda user: "1"
+        original_set = device.set_user_access
+
+        def set_user_access(user, group_id, disabled):
+            if user.user_id == "1001":
+                raise ZkCommandRejectedError("readback mismatch")
+            original_set(user, group_id, disabled)
+
+        device.set_user_access = set_user_access
+        counters = _sync_user_roles(
+            logger=_logger(), config=_config(),
+            backend_api=_FakeBackend([
+                _assignment(member_id="1", device_user_id="1001", target="blackList"),
+                _assignment(member_id="2", device_user_id="1002", target="blackList"),
+            ]),
+            device=device, reason="test",
+        )
+
+        self.assertEqual((counters["failed"], counters["updated"]), (1, 1))
+        self.assertEqual(device.set_group_calls, [("1002", "99", True)])
+
+    def test_network_error_still_aborts_sync(self):
+        from edge_service_zkteco.zk_client import ZkUnavailableError
+
+        device = _FakeDevice([_user(uid=1, user_id="1001")])
+        device.verifies_access_group = True
+
+        def unreachable(user):
+            raise ZkUnavailableError("network down")
+
+        device.get_access_group = unreachable
+        with self.assertRaises(ZkUnavailableError):
+            _sync_user_roles(
+                logger=_logger(), config=_config(),
+                backend_api=_FakeBackend([_assignment(device_user_id="1001", target="blackList")]),
+                device=device, reason="test",
+            )
+
     def test_blocks_expired_member_by_moving_to_blocked_group(self):
         backend = _FakeBackend([_assignment(target="blackList")])
         device = _FakeDevice([_user(group_id="1")])

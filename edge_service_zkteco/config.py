@@ -114,6 +114,8 @@ class EdgeConfig:
     edge_delete_users_path: str
     zk_protected_user_ids: frozenset[str]
     zk_user_role_sync_enabled: bool
+    zk_access_group_cache_seconds: int
+    zk_access_group_cache_file: Path
     zk_user_role_sync_interval_seconds: int
     zk_user_role_sync_backend_path: str
     zk_recovery_restart_seconds: int
@@ -216,6 +218,14 @@ class EdgeConfig:
             or "/zkteco/users/delete",
             zk_protected_user_ids=_get_id_set("ZK_PROTECTED_USER_IDS"),
             zk_user_role_sync_enabled=_get_bool("ZK_USER_ROLE_SYNC_ENABLED", True),
+            zk_access_group_cache_seconds=max(
+                0,
+                _get_int("ZK_ACCESS_GROUP_CACHE_SECONDS", 21600),
+            ),
+            zk_access_group_cache_file=base_dir / os.getenv(
+                "ZK_ACCESS_GROUP_CACHE_FILE",
+                "runtime/zk_access_groups.json",
+            ),
             zk_user_role_sync_interval_seconds=max(
                 300,
                 _get_int("ZK_USER_ROLE_SYNC_INTERVAL_SECONDS", 86400),
