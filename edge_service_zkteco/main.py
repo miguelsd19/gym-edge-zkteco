@@ -404,6 +404,10 @@ def _sync_user_roles(
     if counters["updated"]:
         device.refresh_data()
 
+    save_cache = getattr(device, "save_access_group_cache", None)
+    if save_cache is not None:
+        save_cache()
+
     if progress_callback is not None:
         progress_callback()
 

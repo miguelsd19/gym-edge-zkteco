@@ -379,6 +379,43 @@ class ZkClientTests(unittest.TestCase):
 
         self.assertEqual(self._group_reads(conn), 2)
 
+    def test_access_group_cache_survives_restart(self):
+        cache_file = Path(self._tmpdir.name) / "zk_access_groups.json"
+        conn, client, user = self._speedface_client(zk_access_group_cache_file=cache_file)
+        client.get_access_group(user)
+        client.save_access_group_cache()
+        client.stop()
+
+        conn2, client2, user2 = self._speedface_client(zk_access_group_cache_file=cache_file)
+        self.assertEqual(client2.get_access_group(user2), "1")
+        self.assertEqual(self._group_reads(conn2), 0)
+
+    def test_persisted_cache_ignored_for_other_person_or_expired(self):
+        import json as _json
+        cache_file = Path(self._tmpdir.name) / "zk_access_groups.json"
+        cache_file.write_text(_json.dumps({
+            "7": {"user_id": "9999", "group": "99", "confirmed_at": time.time()},
+        }), encoding="utf-8")
+        conn, client, user = self._speedface_client(zk_access_group_cache_file=cache_file)
+        self.assertEqual(client.get_access_group(user), "1")  # UID reasignado: se relee
+        self.assertEqual(self._group_reads(conn), 1)
+        client.stop()
+
+        cache_file.write_text(_json.dumps({
+            "7": {"user_id": "1001", "group": "99", "confirmed_at": time.time() - 7 * 3600},
+        }), encoding="utf-8")
+        conn2, client2, user2 = self._speedface_client(zk_access_group_cache_file=cache_file)
+        self.assertEqual(client2.get_access_group(user2), "1")  # vencida: se relee
+        self.assertEqual(self._group_reads(conn2), 1)
+
+    def test_corrupt_cache_file_is_ignored(self):
+        cache_file = Path(self._tmpdir.name) / "zk_access_groups.json"
+        cache_file.write_text("{no es json", encoding="utf-8")
+        conn, client, user = self._speedface_client(zk_access_group_cache_file=cache_file)
+
+        self.assertEqual(client.get_access_group(user), "1")
+        self.assertEqual(self._group_reads(conn), 1)
+
     def test_factory_receives_connection_settings(self):
         conn = FakeConn()
         factory = FakeZkFactory([conn])

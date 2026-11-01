@@ -125,10 +125,14 @@ class ZkClient:
         self._last_success_at = ""
         self._consecutive_failures = 0
         self._event_log_lock = threading.Lock()
-        # Grupo efectivo confirmado por UID: {uid: (grupo, monotonic)}. Evita
-        # leer del lector el grupo de cada socio en cada sincronizacion.
-        self._access_group_cache: dict[int, tuple[str, float]] = {}
+        # Grupo efectivo confirmado por UID: {uid: (user_id, grupo, epoch)}.
+        # Evita leer del lector el grupo de cada socio en cada sincronizacion;
+        # se guarda en disco para que un reinicio de la PC no obligue a releer
+        # a todos. Usa hora de reloj (no monotonic) porque sobrevive reinicios.
         self._access_group_cache_lock = threading.Lock()
+        self._access_group_cache_dirty = False
+        self._access_group_cache_saved_at = time.monotonic()
+        self._access_group_cache: dict[int, tuple[str, str, float]] = self._load_access_group_cache()
         self.config.zk_event_log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ API
@@ -138,27 +142,84 @@ class ZkClient:
     verifies_access_group = False
 
     def get_access_group(self, user: ZkUserInfo) -> str:
-        cached = self._cached_access_group(user.uid)
+        cached = self._cached_access_group(user)
         if cached is not None:
             return cached
         group = self._submit('get_access_group', lambda conn: _read_access_group(conn, user.uid))
-        self._remember_access_group(user.uid, group)
+        self._remember_access_group(user, group)
         return group
 
-    def _cached_access_group(self, uid: int) -> str | None:
-        ttl = getattr(self.config, "zk_access_group_cache_seconds", 21600)
+    def save_access_group_cache(self) -> None:
+        """Escribe la cache en disco si cambio (al terminar cada sincronizacion)."""
+        path = self._access_group_cache_path()
+        if path is None:
+            return
         with self._access_group_cache_lock:
-            entry = self._access_group_cache.get(uid)
-        if entry is None or ttl <= 0 or time.monotonic() - entry[1] >= ttl:
-            return None
-        return entry[0]
+            if not self._access_group_cache_dirty:
+                return
+            payload = {
+                str(uid): {"user_id": user_id, "group": group, "confirmed_at": confirmed_at}
+                for uid, (user_id, group, confirmed_at) in self._access_group_cache.items()
+            }
+            self._access_group_cache_dirty = False
+            self._access_group_cache_saved_at = time.monotonic()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            self.logger.warning("Could not save ZK access group cache: %s", exc)
 
-    def _remember_access_group(self, uid: int, group: str | None) -> None:
+    def _access_group_cache_path(self):
+        return getattr(self.config, "zk_access_group_cache_file", None)
+
+    def _access_group_cache_ttl(self) -> int:
+        return getattr(self.config, "zk_access_group_cache_seconds", 21600)
+
+    def _load_access_group_cache(self) -> dict[int, tuple[str, str, float]]:
+        path = self._access_group_cache_path()
+        if path is None or self._access_group_cache_ttl() <= 0 or not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            now = time.time()
+            cache = {}
+            for uid, entry in raw.items():
+                confirmed_at = float(entry["confirmed_at"])
+                if 0 <= now - confirmed_at < self._access_group_cache_ttl():
+                    cache[int(uid)] = (str(entry["user_id"]), str(entry["group"]), confirmed_at)
+            return cache
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            # Cache corrupta: se ignora y el edge vuelve a leer del lector.
+            self.logger.warning("Ignoring unreadable ZK access group cache: %s", exc)
+            return {}
+
+    def _cached_access_group(self, user: ZkUserInfo) -> str | None:
+        ttl = self._access_group_cache_ttl()
+        with self._access_group_cache_lock:
+            entry = self._access_group_cache.get(user.uid)
+        if entry is None or ttl <= 0:
+            return None
+        user_id, group, confirmed_at = entry
+        # Si el UID ahora es de otra persona (re-enrolamiento), no vale.
+        if user_id != user.user_id or not 0 <= time.time() - confirmed_at < ttl:
+            return None
+        return group
+
+    def _remember_access_group(self, user: ZkUserInfo, group: str | None) -> None:
         with self._access_group_cache_lock:
             if group is None:
-                self._access_group_cache.pop(uid, None)
+                if self._access_group_cache.pop(user.uid, None) is not None:
+                    self._access_group_cache_dirty = True
             else:
-                self._access_group_cache[uid] = (group, time.monotonic())
+                self._access_group_cache[user.uid] = (user.user_id, group, time.time())
+                self._access_group_cache_dirty = True
+            save_due = time.monotonic() - self._access_group_cache_saved_at >= 60
+        # Guardado periodico durante un sync largo: un apagon a la mitad no
+        # obliga a releer a todos los ya confirmados.
+        if save_due:
+            self.save_access_group_cache()
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -238,16 +299,17 @@ class ZkClient:
             )
         except Exception:
             # Estado incierto: la siguiente sincronizacion vuelve a leerlo.
-            self._remember_access_group(user.uid, None)
+            self._remember_access_group(user, None)
             raise
         if self.verifies_access_group:
             # _write_user_access ya verifico el grupo leyendolo del lector.
-            self._remember_access_group(user.uid, str(group_id))
+            self._remember_access_group(user, str(group_id))
 
     def delete_user(self, user: ZkUserInfo) -> None:
         # Borra el usuario y sus templates (cara/huella) del equipo.
         self._submit("delete_user", lambda conn: conn.delete_user(uid=user.uid))
-        self._remember_access_group(user.uid, None)
+        self._remember_access_group(user, None)
+        self.save_access_group_cache()
 
     def refresh_data(self) -> None:
         self._submit("refresh_data", lambda conn: conn.refresh_data())

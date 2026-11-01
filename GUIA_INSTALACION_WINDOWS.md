@@ -240,8 +240,10 @@ Una lectura distinta del grupo pedido debe producir un error, nunca un exito.
 Los terminales antiguos de registros de 28 bytes conservan el ajuste del bit.
 Para no leer el grupo de cada usuario del lector en cada sincronizacion, el edge
 recuerda el grupo confirmado durante `ZK_ACCESS_GROUP_CACHE_SECONDS` (6 horas por
-default). Si alguien cambia grupos a mano en el lector, el edge los corrige a mas
-tardar al vencer ese tiempo (o al reiniciar el servicio). Si el lector no confirma
+default) y lo guarda en `dist\runtime\zk_access_groups.json`, asi que reiniciar
+la PC o el servicio no obliga a releer a todos. Si alguien cambia grupos a mano en
+el lector, el edge los corrige a mas tardar al vencer ese tiempo; para forzarlo
+antes, borra ese archivo y reinicia el servicio. Si el lector no confirma
 el cambio de un usuario, se registra como `failed` y la sincronizacion sigue con
 los demas.
 
