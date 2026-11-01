@@ -327,6 +327,58 @@ class ZkClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(ZkCommandRejectedError, 'readback mismatch'):
                     _write_user_access(conn, user, '99', 15)
 
+    def _speedface_client(self, **config_overrides):
+        from edge_service_zkteco.models import ZkUserInfo
+        conn = FakeConn()
+        conn.user_packet_size = 72
+        conn.users = [SimpleNamespace(uid=7, user_id="1001", name="Ana", privilege=0,
+                                      password="", group_id="", card=0)]
+        conn.access_groups = {7: 1}
+        client = self._start_client(FakeZkFactory([conn]), **config_overrides)
+        client.get_users()  # detecta el formato de 72 bytes
+        user = ZkUserInfo(uid=7, user_id="1001", name="Ana", privilege=0,
+                          password="", group_id="", card=0)
+        return conn, client, user
+
+    def _group_reads(self, conn):
+        return sum(1 for command, _ in conn.access_commands if command == 21)
+
+    def test_access_group_is_cached_between_syncs(self):
+        conn, client, user = self._speedface_client()
+
+        self.assertEqual(client.get_access_group(user), "1")
+        self.assertEqual(client.get_access_group(user), "1")
+
+        self.assertEqual(self._group_reads(conn), 1)
+
+    def test_verified_write_updates_cache_without_extra_read(self):
+        conn, client, user = self._speedface_client()
+        client.set_user_access(user, "99", True)
+        reads_after_write = self._group_reads(conn)  # la verificacion de la escritura
+
+        self.assertEqual(client.get_access_group(user), "99")
+        self.assertEqual(self._group_reads(conn), reads_after_write)
+
+    def test_failed_write_forgets_cached_group(self):
+        conn, client, user = self._speedface_client()
+        client.get_access_group(user)
+        conn.ignore_user_write = True
+
+        with self.assertRaises(ZkCommandRejectedError):
+            client.set_user_access(user, "99", True)
+        reads_before = self._group_reads(conn)
+        client.get_access_group(user)
+
+        self.assertEqual(self._group_reads(conn), reads_before + 1)
+
+    def test_access_group_cache_disabled_with_zero_ttl(self):
+        conn, client, user = self._speedface_client(zk_access_group_cache_seconds=0)
+
+        client.get_access_group(user)
+        client.get_access_group(user)
+
+        self.assertEqual(self._group_reads(conn), 2)
+
     def test_factory_receives_connection_settings(self):
         conn = FakeConn()
         factory = FakeZkFactory([conn])

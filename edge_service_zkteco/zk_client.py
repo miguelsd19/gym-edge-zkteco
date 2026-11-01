@@ -125,6 +125,10 @@ class ZkClient:
         self._last_success_at = ""
         self._consecutive_failures = 0
         self._event_log_lock = threading.Lock()
+        # Grupo efectivo confirmado por UID: {uid: (grupo, monotonic)}. Evita
+        # leer del lector el grupo de cada socio en cada sincronizacion.
+        self._access_group_cache: dict[int, tuple[str, float]] = {}
+        self._access_group_cache_lock = threading.Lock()
         self.config.zk_event_log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ API
@@ -134,7 +138,27 @@ class ZkClient:
     verifies_access_group = False
 
     def get_access_group(self, user: ZkUserInfo) -> str:
-        return self._submit('get_access_group', lambda conn: _read_access_group(conn, user.uid))
+        cached = self._cached_access_group(user.uid)
+        if cached is not None:
+            return cached
+        group = self._submit('get_access_group', lambda conn: _read_access_group(conn, user.uid))
+        self._remember_access_group(user.uid, group)
+        return group
+
+    def _cached_access_group(self, uid: int) -> str | None:
+        ttl = getattr(self.config, "zk_access_group_cache_seconds", 21600)
+        with self._access_group_cache_lock:
+            entry = self._access_group_cache.get(uid)
+        if entry is None or ttl <= 0 or time.monotonic() - entry[1] >= ttl:
+            return None
+        return entry[0]
+
+    def _remember_access_group(self, uid: int, group: str | None) -> None:
+        with self._access_group_cache_lock:
+            if group is None:
+                self._access_group_cache.pop(uid, None)
+            else:
+                self._access_group_cache[uid] = (group, time.monotonic())
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -207,14 +231,23 @@ class ZkClient:
         privilege = user.privilege & ~USER_DISABLED_FLAG
         if disabled:
             privilege |= USER_DISABLED_FLAG
-        self._submit(
-            "set_user",
-            lambda conn: _write_user_access(conn, user, str(group_id), privilege),
-        )
+        try:
+            self._submit(
+                "set_user",
+                lambda conn: _write_user_access(conn, user, str(group_id), privilege),
+            )
+        except Exception:
+            # Estado incierto: la siguiente sincronizacion vuelve a leerlo.
+            self._remember_access_group(user.uid, None)
+            raise
+        if self.verifies_access_group:
+            # _write_user_access ya verifico el grupo leyendolo del lector.
+            self._remember_access_group(user.uid, str(group_id))
 
     def delete_user(self, user: ZkUserInfo) -> None:
         # Borra el usuario y sus templates (cara/huella) del equipo.
         self._submit("delete_user", lambda conn: conn.delete_user(uid=user.uid))
+        self._remember_access_group(user.uid, None)
 
     def refresh_data(self) -> None:
         self._submit("refresh_data", lambda conn: conn.refresh_data())

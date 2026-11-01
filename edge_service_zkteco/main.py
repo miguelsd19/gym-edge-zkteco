@@ -18,7 +18,7 @@ from edge_service_zkteco.file_event_source import FileEventSource
 from edge_service_zkteco.logging_setup import configure_logging
 from edge_service_zkteco.models import USER_DISABLED_FLAG, FailedAttempt, ZkUserInfo
 from edge_service_zkteco.state_store import ProcessedEventStore
-from edge_service_zkteco.zk_client import ZkClient, ZkUnavailableError
+from edge_service_zkteco.zk_client import ZkClient, ZkCommandRejectedError, ZkUnavailableError
 
 
 class _HealthState:
@@ -304,7 +304,7 @@ def _sync_user_roles(
     member_ids: list[str] | None = None,
     progress_callback: Callable[[], None] | None = None,
 ) -> dict[str, int]:
-    counters = {"assignments": 0, "updated": 0, "unchanged": 0, "missing": 0, "skipped": 0}
+    counters = {"assignments": 0, "updated": 0, "unchanged": 0, "missing": 0, "skipped": 0, "failed": 0}
     if not config.zk_user_role_sync_enabled:
         return counters
 
@@ -363,16 +363,30 @@ def _sync_user_roles(
         # quedaria rechazado por el terminal aunque este en el grupo permitido.
         target_disabled = target_user_type == "blackList"
         verified_group = getattr(device, "verifies_access_group", False)
-        if verified_group:
-            existing_user.group_id = device.get_access_group(existing_user)
-        if (
-            (existing_user.group_id or "").strip() == target_group
-            and (verified_group or existing_user.disabled == target_disabled)
-        ):
-            counters["unchanged"] += 1
-            continue
+        try:
+            if verified_group:
+                existing_user.group_id = device.get_access_group(existing_user)
+            if (
+                (existing_user.group_id or "").strip() == target_group
+                and (verified_group or existing_user.disabled == target_disabled)
+            ):
+                counters["unchanged"] += 1
+                continue
 
-        device.set_user_access(existing_user, target_group, target_disabled)
+            device.set_user_access(existing_user, target_group, target_disabled)
+        except ZkCommandRejectedError as exc:
+            # El lector respondio pero rechazo o no confirmo el cambio de este
+            # socio: se registra y se sigue con los demas. Un error de red
+            # (ZkUnavailableError) si detiene la sincronizacion.
+            counters["failed"] += 1
+            logger.warning(
+                "ZK user access not confirmed. user_id=%s member=%s target=%s error=%s",
+                identifier,
+                assignment.member_name or assignment.member_id or "-",
+                target_user_type,
+                exc,
+            )
+            continue
         existing_user.group_id = target_group
         if not verified_group:
             existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
@@ -394,13 +408,14 @@ def _sync_user_roles(
         progress_callback()
 
     logger.info(
-        "ZK user role sync completed (%s). assignments=%s updated=%s unchanged=%s missing=%s skipped=%s",
+        "ZK user role sync completed (%s). assignments=%s updated=%s unchanged=%s missing=%s skipped=%s failed=%s",
         reason,
         counters["assignments"],
         counters["updated"],
         counters["unchanged"],
         counters["missing"],
         counters["skipped"],
+        counters["failed"],
     )
     return counters
 

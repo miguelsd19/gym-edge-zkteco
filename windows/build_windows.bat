@@ -7,7 +7,7 @@ if not exist ".venv\Scripts\python.exe" (
   echo No se encontro .venv\Scripts\python.exe
   echo Crea un entorno virtual en Windows e instala las dependencias primero:
   echo   python -m venv .venv
-  echo   .venv\Scripts\pip install pyzk pyinstaller
+  echo   .venv\Scripts\pip install pyzk==0.9 pyinstaller
   exit /b 1
 )
 

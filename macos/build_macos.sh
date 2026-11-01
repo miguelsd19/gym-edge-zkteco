@@ -12,7 +12,7 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "No se encontro $PYTHON_BIN"
   echo "Crea un entorno virtual en macOS e instala las dependencias primero:"
   echo "  python3 -m venv .venv"
-  echo "  .venv/bin/pip install pyzk pyinstaller"
+  echo "  .venv/bin/pip install pyzk==0.9 pyinstaller"
   exit 1
 fi
 

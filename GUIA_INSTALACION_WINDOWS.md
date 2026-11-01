@@ -86,7 +86,7 @@ En la misma ventana de CMD, dentro de `C:\edge_service_zkteco`, pega uno por uno
 
 ```bat
 py -3.11 -m venv .venv
-.venv\Scripts\pip install pyzk pyinstaller
+.venv\Scripts\pip install pyzk==0.9 pyinstaller
 windows\build_windows.bat
 ```
 
@@ -238,6 +238,12 @@ despues de escribirlo y se conserva el registro personal, horarios y biometria.
 La prueba manual con el grupo 99 rechazo correctamente al usuario de prueba.
 Una lectura distinta del grupo pedido debe producir un error, nunca un exito.
 Los terminales antiguos de registros de 28 bytes conservan el ajuste del bit.
+Para no leer el grupo de cada usuario del lector en cada sincronizacion, el edge
+recuerda el grupo confirmado durante `ZK_ACCESS_GROUP_CACHE_SECONDS` (6 horas por
+default). Si alguien cambia grupos a mano en el lector, el edge los corrige a mas
+tardar al vencer ese tiempo (o al reiniciar el servicio). Si el lector no confirma
+el cambio de un usuario, se registra como `failed` y la sincronizacion sigue con
+los demas.
 
 El edge consulta al backend que miembros deben quedar permitidos o bloqueados y los mueve
 de grupo dentro del terminal ZKTeco:
@@ -275,7 +281,7 @@ Cuando haya una version nueva, en CMD **como administrador**:
 cd /d C:\edge_service_zkteco
 sc stop GymEdgeZkteco
 git pull
-.venv\Scripts\pip install pyzk pyinstaller
+.venv\Scripts\pip install pyzk==0.9 pyinstaller
 windows\build_windows.bat
 sc start GymEdgeZkteco
 ```
@@ -411,7 +417,7 @@ Si solo quieres la version corta, estos son los pasos:
 git clone https://github.com/miguelsd19/gym-edge-zkteco.git C:\edge_service_zkteco
 cd /d C:\edge_service_zkteco
 py -3.11 -m venv .venv
-.venv\Scripts\pip install pyzk pyinstaller
+.venv\Scripts\pip install pyzk==0.9 pyinstaller
 windows\build_windows.bat
 copy E:\.env dist\.env
 dist\gym-edge-service-zkteco.exe
