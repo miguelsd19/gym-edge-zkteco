@@ -127,6 +127,69 @@ class _SyncProgress:
             }
 
 
+class _ReaderSyncEventLog:
+    """Cambios aplicados al lector para el reporte diario del backend.
+
+    Registra bloqueos/desbloqueos y los socios que no se pudieron actualizar
+    (no estan en el lector, o el lector no confirmo). Estos dos ultimos se
+    registran una vez por dia y socio, para no repetirlos en cada sync. Se
+    envian al terminar cada sincronizacion; si el backend no responde se
+    conservan (hasta MAX_PENDING) y se reintentan en la siguiente.
+    """
+
+    MAX_PENDING = 5000
+    BATCH_SIZE = 500
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: list[dict[str, Any]] = []
+        self._reported_today: set[tuple[str, str, str]] = set()
+        self._reported_day = ""
+
+    def record(self, *, action: str, assignment: Any, identifier: str, reason: str = "") -> None:
+        now = datetime.now(timezone.utc)
+        local_day = datetime.now().date().isoformat()
+        key = assignment.member_id or identifier
+        with self._lock:
+            if self._reported_day != local_day:
+                self._reported_day = local_day
+                self._reported_today.clear()
+            if action in {"missing", "failed"}:
+                marker = (local_day, key, action)
+                if marker in self._reported_today:
+                    return
+                self._reported_today.add(marker)
+            self._pending.append({
+                "member_id": assignment.member_id or None,
+                "member_name": (assignment.member_name or "")[:200],
+                "device_user_id": identifier[:64],
+                "action": action,
+                "reason": (reason or "")[:200],
+                "occurred_at": now.isoformat(timespec="seconds"),
+            })
+            if len(self._pending) > self.MAX_PENDING:
+                self._pending = self._pending[-self.MAX_PENDING:]
+
+    def flush(self, *, backend_api: Any, logger: logging.Logger) -> None:
+        while True:
+            with self._lock:
+                batch = self._pending[: self.BATCH_SIZE]
+                self._pending = self._pending[self.BATCH_SIZE:]
+            if not batch:
+                return
+            try:
+                backend_api.report_reader_sync_events(batch)
+            except BackendUnavailableError as exc:
+                with self._lock:
+                    self._pending = (batch + self._pending)[-self.MAX_PENDING:]
+                logger.warning("Could not report reader sync events (%s pending): %s", len(self._pending), exc)
+                return
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+
 class _FileDeviceStub:
     """
     Sustituto del ZkClient en modo file (pruebas sin hardware).
@@ -378,6 +441,7 @@ def _sync_user_roles(
     member_ids: list[str] | None = None,
     progress_callback: Callable[[], None] | None = None,
     sync_progress: _SyncProgress | None = None,
+    event_log: _ReaderSyncEventLog | None = None,
 ) -> dict[str, int]:
     tracking = (
         sync_progress is not None
@@ -396,11 +460,16 @@ def _sync_user_roles(
             member_ids=member_ids,
             progress_callback=progress_callback,
             sync_progress=sync_progress if tracking else None,
+            event_log=event_log,
         )
     except Exception as exc:
         if tracking:
             sync_progress.fail(exc)
         raise
+    finally:
+        # Lo aplicado antes de un error tambien se reporta.
+        if event_log is not None:
+            event_log.flush(backend_api=backend_api, logger=logger)
     if tracking:
         sync_progress.finish(counters)
     return counters
@@ -416,6 +485,7 @@ def _run_user_role_sync(
     member_ids: list[str] | None,
     progress_callback: Callable[[], None] | None,
     sync_progress: _SyncProgress | None,
+    event_log: _ReaderSyncEventLog | None = None,
 ) -> dict[str, int]:
     counters = {"assignments": 0, "updated": 0, "unchanged": 0, "missing": 0, "skipped": 0, "failed": 0}
     if not config.zk_user_role_sync_enabled:
@@ -478,6 +548,11 @@ def _run_user_role_sync(
             existing_user = users_by_id.get(identifier)
             if existing_user is None:
                 counters["missing"] += 1
+                if event_log is not None:
+                    event_log.record(
+                        action="missing", assignment=assignment, identifier=identifier,
+                        reason=assignment.reason or "",
+                    )
                 logger.warning(
                     "ZK user role sync could not find user_id=%s member=%s target=%s.",
                     identifier,
@@ -512,6 +587,11 @@ def _run_user_role_sync(
                 # socio: se registra y se sigue con los demas. Un error de red
                 # (ZkUnavailableError) si detiene la sincronizacion.
                 counters["failed"] += 1
+                if event_log is not None:
+                    event_log.record(
+                        action="failed", assignment=assignment, identifier=identifier,
+                        reason=str(exc),
+                    )
                 logger.warning(
                     "ZK user access not confirmed. user_id=%s member=%s target=%s error=%s",
                     identifier,
@@ -524,6 +604,11 @@ def _run_user_role_sync(
             if not verified_group:
                 existing_user.privilege = (existing_user.privilege & ~USER_DISABLED_FLAG) | int(target_disabled)
             counters["updated"] += 1
+            if event_log is not None:
+                event_log.record(
+                    action="blocked" if target_disabled else "unblocked",
+                    assignment=assignment, identifier=identifier, reason=assignment.reason or "",
+                )
             logger.info(
                 "ZK user access updated. user_id=%s member=%s group=%s blocked=%s (%s) reason=%s",
                 identifier,
@@ -565,6 +650,7 @@ def _handle_user_role_sync(
     backend_api: BackendApiClient,
     device: Any,
     sync_progress: _SyncProgress | None = None,
+    event_log: _ReaderSyncEventLog | None = None,
 ) -> dict[str, Any]:
     raw_member_ids = payload.get("member_ids", [])
     member_ids: list[str] = []
@@ -587,6 +673,7 @@ def _handle_user_role_sync(
         reason=sync_reason,
         member_ids=member_ids or None,
         sync_progress=sync_progress,
+        event_log=event_log,
     )
     return {
         "success": True,
@@ -749,6 +836,7 @@ def run() -> None:
     recent_grants: dict[str, float] = {}
     health_state = _HealthState()
     sync_progress = _SyncProgress()
+    reader_sync_events = _ReaderSyncEventLog()
     _start_watchdog(logger=logger, config=config, health_state=health_state)
 
     event_queue: "queue.Queue[Any]" = queue.Queue()
@@ -787,6 +875,7 @@ def run() -> None:
                 backend_api=backend_api,
                 device=device,
                 sync_progress=sync_progress,
+                event_log=reader_sync_events,
             ),
             delete_users_path=config.edge_delete_users_path,
             on_delete_users=lambda payload: _handle_delete_users(
@@ -960,6 +1049,7 @@ def run() -> None:
                     reason=sync_reason,
                     progress_callback=service_sync_progress,
                     sync_progress=sync_progress,
+                    event_log=reader_sync_events,
                 )
             except (BackendUnavailableError, ZkUnavailableError) as exc:
                 logger.warning("ZK user role sync failed (%s): %s", sync_reason, exc)
