@@ -1,4 +1,5 @@
 import logging
+import queue
 import tempfile
 import time
 import unittest
@@ -9,13 +10,16 @@ from types import SimpleNamespace
 from edge_service_zkteco.backend_api import BackendUnavailableError
 from edge_service_zkteco.failed_attempts import FailedAttemptStore
 from edge_service_zkteco.main import (
+    _HealthState,
+    _drain_access_events,
     _build_edge_health_payload,
     _handle_remote_open,
     _is_duplicate_recent_grant,
     _is_stale_event,
     _process_event,
+    _sync_user_roles,
 )
-from edge_service_zkteco.models import AccessDecision
+from edge_service_zkteco.models import AccessDecision, UserRoleAssignment, ZkUserInfo
 from edge_service_zkteco.state_store import ProcessedEventStore
 from edge_service_zkteco.zk_client import ZkUnavailableError
 
@@ -192,6 +196,61 @@ class ProcessEventTests(unittest.TestCase):
         self.assertEqual(backend.validate_calls[0][0], "1001")
         self.assertEqual(device.unlock_calls, [3])
         self.assertIn("1001", self.recent_grants)
+
+    def test_access_is_validated_between_sync_writes_and_after_final_write(self):
+        for granted in (True, False):
+            with self.subTest(granted=granted):
+                events = queue.Queue()
+                order = []
+                device = _FakeDevice()
+                backend = _FakeBackend(decision=_decision(granted=granted))
+                users = [
+                    ZkUserInfo(i, str(i), 'Test', 0, '', '', 0)
+                    for i in (11, 12)
+                ]
+                backend.fetch_user_roles = lambda **kw: [
+                    UserRoleAssignment(str(i), 'Test', str(i), str(i), 'normal', 'test')
+                    for i in (11, 12)
+                ]
+                device.get_users = lambda: users
+                device.refresh_data = lambda: order.append('refresh')
+
+                def write(user, group_id, disabled):
+                    order.append('write-' + user.user_id)
+                    events.put(self._event(user_id=str(user.uid) + str(granted)))
+
+                def process(event):
+                    self._process(event, backend=backend, device=device)
+                    order.append('access')
+
+                device.set_user_access = write
+                health = _HealthState()
+                counters = _sync_user_roles(
+                    logger=_logger(),
+                    config=self._config(
+                        zk_user_role_sync_enabled=True, access_mode='rfid',
+                        zk_allowed_group_id='1', zk_blocked_group_id='99',
+                    ),
+                    backend_api=backend, device=device, reason='test',
+                    progress_callback=lambda: _drain_access_events(events, process, health),
+                )
+                self.assertEqual(order, ['write-11', 'access', 'write-12', 'refresh', 'access'])
+                self.assertEqual(counters['updated'], 2)
+                self.assertEqual(len(backend.validate_calls), 2)
+                self.assertEqual(device.unlock_calls, [3, 3] if granted else [])
+
+    def test_sync_event_drain_is_bounded_under_continuous_events(self):
+        events = queue.Queue()
+        events.put('event')
+        processed = []
+
+        def process(event):
+            processed.append(event)
+            events.put(event)
+
+        _drain_access_events(events, process, _HealthState())
+        self.assertEqual(len(processed), 16)
+        self.assertEqual(events.qsize(), 1)
 
     def test_same_event_is_processed_only_once(self):
         event = self._event()
