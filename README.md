@@ -177,6 +177,10 @@ sc stop GymEdgeZkteco
 sc start GymEdgeZkteco
 ```
 
+En Windows, `windows\probar_registro_huella.bat` hace esos tres pasos, guarda la salida en
+`pruebas\` y siempre vuelve a arrancar el servicio. Guía para el agente de la PC:
+`PRUEBA_REGISTRO_HUELLA.md`.
+
 Crea el usuario de prueba `990001` (bloqueado), pide el dedo, revisa que la huella se guardo y lo
 borra. Si el ID ya existe no hace nada. Salida `0` = soportado; `2` = el lector no guardo la huella
 (repetir con `--verbose` y guardar la salida para diagnostico).
