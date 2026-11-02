@@ -7,11 +7,12 @@ con `AGENTS.md` antes de ejecutar nada. Las reglas de `AGENTS.md` siguen aplican
 
 Saber si el SpeedFace-V5L de Norias (firmware `Ver 6.60 Aug 19 2021`) acepta el **registro remoto
 de huella**: que el sistema le diga al lector "pide el dedo de este usuario" y el lector lo guarde.
-De eso depende el botón "Registrar huella" de la app (PR `feat/enrolar-huella`, todavía sin
-mergear y apagado).
+De eso depende el botón "Registrar huella" de la app. El código ya está en `main`, pero apagado
+(`ZK_REMOTE_ENROLL_ENABLED=false` en el edge y flag `remote_fingerprint_enroll` apagado en el
+backend).
 
 **Esta tarea es solo la prueba.** No enciendas `ZK_REMOTE_ENROLL_ENABLED`, no reconstruyas el
-`.exe`, no cambies el `.env` y no hagas merge. Al final reporta el resultado.
+`.exe` y no cambies el `.env`. Al final reporta el resultado.
 
 ## Qué hace la prueba
 
@@ -39,16 +40,19 @@ En CMD **como administrador**:
 ```bat
 cd /d C:\edge_service_zkteco
 git status
-git fetch origin
-git checkout feat/enrolar-huella
+git branch --show-current
 git pull
 .venv\Scripts\python -m unittest discover -s tests
+dir windows\probar_registro_huella.bat
 ```
 
 - Si `git status` muestra cambios locales, **detente** y repórtalo. No los descartes.
 - Los tests deben terminar en `OK`. Si fallan, detente y reporta la salida.
-- Cambiar de rama solo cambia el código fuente. El servicio corre el `.exe` ya construido en
-  `dist\`, así que sigue igual.
+- Debe estar en la rama `main`. Si no, detente y repórtalo.
+- Si `windows\probar_registro_huella.bat` no existe después del `git pull`, el cambio todavía no
+  llegó a `main`. Detente y repórtalo.
+- `git pull` solo actualiza el código fuente. El servicio corre el `.exe` ya construido en
+  `dist\`, así que sigue igual. La prueba usa el código fuente con `.venv`, no el `.exe`.
 
 Verifica la red:
 
@@ -91,12 +95,6 @@ powershell -Command "Get-Content dist\runtime\edge_zkteco.log -Tail 30"
 - Pide a alguien que pase por el lector y confirma que en el log aparecen `Candidate ZK event
   received` y `Access result: granted=...` de esa marca.
 
-### 5. Dejar la PC como estaba
-
-```bat
-git checkout main
-```
-
 ## Cómo interpretar el resultado
 
 | Código | Significado | Qué reportar |
@@ -121,5 +119,6 @@ Si el código es `2`, también es útil saber si el lector **mostró la pantalla
 5. El archivo de `pruebas\` si el resultado no fue `0`. Lleva la salida del protocolo, pero no
    datos de socios.
 
-Si salió `0`, el siguiente paso **no lo hace este agente**: el dueño mergea las PRs, se actualiza
-el edge y se enciende `ZK_REMOTE_ENROLL_ENABLED=true` junto con el flag del backend.
+Si salió `0`, el siguiente paso **no lo hace este agente sin instrucción del dueño**: reconstruir el
+`.exe`, poner `ZK_REMOTE_ENROLL_ENABLED=true` en `dist\.env` y encender el flag
+`remote_fingerprint_enroll` de Norias en el backend.
