@@ -211,51 +211,107 @@ class RemoteEnrollManagerTests(unittest.TestCase):
         device = _FakeDevice()
         manager, synced = _manager(device)
 
-        started = manager.handle_start({"member_id": "m-1", "finger_index": 6})
+        started = manager.handle_start({"member_id": "m-1", "biometrics": ["fingerprint"], "finger_index": 6})
         result = _wait(manager, started["job_id"])
 
         self.assertEqual(result["status"], DONE)
         self.assertTrue(result["created_user"])
+        self.assertEqual(result["results"], {"user": "created", "fingerprint": "saved"})
+        self.assertEqual(result["error_code"], "")
         self.assertEqual(device.created, [("3800", "Ana Lopez", "99")])
         self.assertEqual(device.enrolled, [("3800", 6)])
         self.assertEqual(synced, ["m-1"])
+
+    def test_registration_only_creates_user_without_fingerprint(self):
+        device = _FakeDevice()
+        manager, synced = _manager(device)
+
+        result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": []})["job_id"])
+
+        self.assertEqual(result["status"], DONE)
+        self.assertEqual(result["results"], {"user": "created"})
+        self.assertEqual(result["message"], "Alta en el lector lista.")
+        self.assertEqual(device.enrolled, [])
+        self.assertEqual(synced, ["m-1"])
+
+    def test_default_biometrics_is_fingerprint_for_older_backends(self):
+        device = _FakeDevice()
+        manager, _ = _manager(device)
+        result = _wait(manager, manager.handle_start({"member_id": "m-1"})["job_id"])
+        self.assertEqual(result["results"], {"user": "created", "fingerprint": "saved"})
 
     def test_existing_user_is_enrolled_without_creating(self):
         device = _FakeDevice(users=[ZkUserInfo(uid=1, user_id="3800", name="Ana", privilege=0,
                                                password="", group_id="1", card=0)])
         manager, _ = _manager(device)
 
-        result = _wait(manager, manager.handle_start({"member_id": "m-1"})["job_id"])
+        result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": ["fingerprint"]})["job_id"])
 
         self.assertEqual(result["status"], DONE)
         self.assertFalse(result["created_user"])
+        self.assertEqual(result["results"]["user"], "existing")
         self.assertEqual(device.created, [])
+
+    def test_face_is_not_supported_on_this_reader(self):
+        device = _FakeDevice()
+        manager, synced = _manager(device)
+        result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": ["face"]})["job_id"])
+        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-103"))
+        self.assertEqual(device.created, [])
+        self.assertEqual(synced, [])
 
     def test_refuses_protected_and_admin_users(self):
         manager, _ = _manager(_FakeDevice(), protected={"3800"})
         result = _wait(manager, manager.handle_start({"member_id": "m-1"})["job_id"])
-        self.assertEqual(result["status"], FAILED)
+        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-201"))
         self.assertIn("protegido", result["message"])
 
         admin = ZkUserInfo(uid=1, user_id="3800", name="Admin", privilege=14, password="", group_id="1", card=0)
         device = _FakeDevice(users=[admin])
         manager, _ = _manager(device)
         result = _wait(manager, manager.handle_start({"member_id": "m-1"})["job_id"])
-        self.assertEqual(result["status"], FAILED)
+        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-201"))
         self.assertEqual(device.enrolled, [])
 
     def test_member_without_biometric_id_fails(self):
         manager, _ = _manager(_FakeDevice(), assignments=[])
         result = _wait(manager, manager.handle_start({"member_id": "m-1"})["job_id"])
-        self.assertEqual(result["status"], FAILED)
+        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-003"))
         self.assertIn("ID biometrico", result["message"])
 
-    def test_rejected_or_unreachable_enroll_fails_without_sync(self):
-        for device in (_FakeDevice(enroll_result=False), _FakeDevice(enroll_error=ZkUnavailableError("timeout"))):
+    def test_fingerprint_failures_have_codes_and_still_apply_access(self):
+        for device, code in (
+            (_FakeDevice(enroll_result=False), "RL-302"),
+            (_FakeDevice(enroll_error=ZkUnavailableError("timeout")), "RL-301"),
+        ):
             manager, synced = _manager(device)
-            result = _wait(manager, manager.handle_start({"member_id": "m-1"})["job_id"])
-            self.assertEqual(result["status"], FAILED)
-            self.assertEqual(synced, [])
+            result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": ["fingerprint"]})["job_id"])
+            self.assertEqual((result["status"], result["error_code"]), (FAILED, code))
+            self.assertEqual(result["results"], {"user": "created", "fingerprint": "failed"})
+            # El usuario ya quedo en el lector: se aplica su acceso igual.
+            self.assertEqual(synced, ["m-1"])
+
+    def test_unreachable_reader_is_rl101(self):
+        class _Down(_FakeDevice):
+            def get_users(self):
+                raise ZkUnavailableError("ZK device thread is not running.")
+
+        manager, synced = _manager(_Down())
+        result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": []})["job_id"])
+        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-101"))
+        self.assertEqual(synced, [])
+
+    def test_sync_failure_is_a_warning(self):
+        device = _FakeDevice()
+        manager, _ = _manager(device)
+
+        def failing_sync(member_id):
+            raise RuntimeError("backend down")
+
+        manager.sync_member = failing_sync
+        result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": []})["job_id"])
+        self.assertEqual(result["status"], DONE)
+        self.assertEqual(result["warning_code"], "RL-501")
 
     def test_only_one_enroll_at_a_time_and_validates_input(self):
         manager, _ = _manager(_FakeDevice())
@@ -263,7 +319,8 @@ class RemoteEnrollManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             manager.handle_start({"member_id": "m-1"})
         manager._active_job_id = None
-        for payload in ({}, {"member_id": "m-1", "finger_index": 10}, {"member_id": "m-1", "finger_index": "x"}):
+        for payload in ({}, {"member_id": "m-1", "finger_index": 10}, {"member_id": "m-1", "finger_index": "x"},
+                        {"member_id": "m-1", "biometrics": ["iris"]}, {"member_id": "m-1", "biometrics": "fingerprint"}):
             with self.assertRaises(ValueError):
                 manager.handle_start(payload)
         with self.assertRaises(ValueError):

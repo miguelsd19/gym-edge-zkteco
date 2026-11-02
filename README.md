@@ -154,19 +154,23 @@ python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backup
 
 ## Registro remoto de huella (apagado por defecto)
 
-Con `ZK_REMOTE_ENROLL_ENABLED=true` el backend puede pedir registrar la huella de un miembro
-(boton "Registrar huella" en Miembros, flag `zkteco_remote_enroll` del backend). El edge:
+Con `ZK_REMOTE_ENROLL_ENABLED=true` el backend puede dar de alta a un miembro en el lector y pedir
+su huella (flag `zkteco_remote_enroll` del backend). Mismo contrato que el edge Hikvision:
 
-1. Lee del backend el ID biometrico del miembro (mismo endpoint del sync).
-2. Si no existe en el lector, lo crea con un UID libre en el grupo bloqueado (`ZK_BLOCKED_GROUP_ID`).
-3. Pone el lector en modo enrolamiento (`CMD_STARTENROLL`): la persona pone el mismo dedo 3 veces.
-4. Verifica que la huella quedo guardada y corre el sync de ese miembro (grupo correcto).
+- `POST EDGE_ENROLL_PATH` (`/enroll`) con `{member_id, biometrics, finger_index}` devuelve un
+  `job_id`; `POST EDGE_ENROLL_STATUS_PATH` (`/enroll/status`, `{job_id}`) da el estado:
+  `preparing`, `creating_user`, `waiting_finger`, `syncing`, `done` o `failed`.
+- `biometrics = []` solo da de alta al usuario (al inscribir; en planes de pareja, a cada persona
+  una tras otra). `["fingerprint"]` además pone el lector en modo enrolamiento (`CMD_STARTENROLL`):
+  la persona pone el mismo dedo 3 veces. Este lector no registra caras: `"face"` falla con RL-103.
+- Si el usuario no existe en el lector, se crea con un UID libre en el grupo bloqueado
+  (`ZK_BLOCKED_GROUP_ID`); al final se corre el sync de ese miembro (grupo correcto).
+- Los errores llevan código RL-xxx y detalle (`error_code`, `error_detail`; ver
+  `docs/CODIGOS_ERROR_LECTOR.md` en gym-System). Un sync fallido al final es un aviso (`RL-501`).
 
-Corre en segundo plano: `POST EDGE_ENROLL_PATH` (`/zkteco/enroll`, `{member_id, finger_index}`)
-devuelve un `job_id` y `POST EDGE_ENROLL_STATUS_PATH` (`/zkteco/enroll/status`, `{job_id}`) da el
-estado: `preparing`, `waiting_finger`, `done` o `failed`. Un solo registro a la vez. Mientras el
-lector espera el dedo (hasta `ZK_ENROLL_TIMEOUT_SECONDS`) el edge no recibe entradas en vivo; el
-lector sigue abriendo solo. Nunca toca administradores del lector ni `ZK_PROTECTED_USER_IDS`.
+Un solo registro a la vez. Mientras el lector espera el dedo (hasta `ZK_ENROLL_TIMEOUT_SECONDS`) el
+edge no recibe entradas en vivo; el lector sigue abriendo solo. Nunca toca administradores del
+lector ni `ZK_PROTECTED_USER_IDS`.
 
 **Antes de encenderlo, probar que el firmware lo acepta** (con el servicio detenido y alguien junto
 al lector):

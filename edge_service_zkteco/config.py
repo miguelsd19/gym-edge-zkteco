@@ -228,12 +228,12 @@ class EdgeConfig:
             # Apagado por defecto: encenderlo solo despues de que enroll_probe
             # confirme que el firmware del lector acepta el enrolamiento remoto.
             zk_remote_enroll_enabled=_get_bool("ZK_REMOTE_ENROLL_ENABLED", False),
-            edge_enroll_path=os.getenv("EDGE_ENROLL_PATH", "/zkteco/enroll").strip()
-            or "/zkteco/enroll",
+            edge_enroll_path=os.getenv("EDGE_ENROLL_PATH", "/enroll").strip()
+            or "/enroll",
             edge_enroll_status_path=os.getenv(
-                "EDGE_ENROLL_STATUS_PATH", "/zkteco/enroll/status"
+                "EDGE_ENROLL_STATUS_PATH", "/enroll/status"
             ).strip()
-            or "/zkteco/enroll/status",
+            or "/enroll/status",
             zk_enroll_timeout_seconds=max(30.0, _get_float("ZK_ENROLL_TIMEOUT_SECONDS", 240.0)),
             zk_user_role_sync_enabled=_get_bool("ZK_USER_ROLE_SYNC_ENABLED", True),
             zk_access_group_cache_seconds=max(

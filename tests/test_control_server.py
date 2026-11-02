@@ -110,18 +110,18 @@ class EdgeControlServerTests(unittest.TestCase):
             bearer_token="token",
             logger=logger,
             on_open=lambda payload: {"success": True},
-            extra_routes={"zkteco/enroll": lambda payload: calls.append(payload) or {"success": True, "job_id": "j1"}},
+            extra_routes={"enroll": lambda payload: calls.append(payload) or {"success": True, "job_id": "j1"}},
         )
         port = server._server.server_address[1]
         server.start()
         self.addCleanup(server._server.shutdown)
 
-        status, body = _request(f"http://127.0.0.1:{port}/zkteco/enroll", payload={"member_id": "m-1"})
+        status, body = _request(f"http://127.0.0.1:{port}/enroll", payload={"member_id": "m-1"})
 
         self.assertEqual((status, body["job_id"]), (200, "j1"))
         self.assertEqual(calls, [{"member_id": "m-1"}])
         with self.assertRaises(urllib.error.HTTPError) as ctx:
-            _request(self._url("/zkteco/enroll"), payload={})
+            _request(self._url("/enroll"), payload={})
         self.assertEqual(ctx.exception.code, 404)
 
     def test_get_healthcheck_reports_zkteco_device(self):

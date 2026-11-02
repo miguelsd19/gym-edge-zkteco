@@ -1,13 +1,18 @@
-"""Enrolamiento remoto de huella pedido por el backend (boton "Registrar huella").
+"""Alta en el lector y registro remoto de huella pedidos por el backend.
 
-El backend pide enrolar a un miembro; el edge:
-1. Pregunta al backend el ID biometrico del miembro (mismo endpoint del sync).
-2. Si el usuario no existe en el lector, lo crea en el grupo bloqueado.
-3. Pone el lector en modo enrolamiento: la persona pone el dedo 3 veces.
-4. Corre el sync de ese miembro para dejarlo en el grupo que le toca.
+Mismo contrato que el edge Hikvision (gym-System, edge_service_hikvision):
+el backend inicia un trabajo con `{member_id, biometrics, finger_index}`.
 
-Tarda hasta minutos, asi que corre en un hilo aparte: el backend inicia el
-trabajo y despues consulta su estado. Solo hay un enrolamiento a la vez.
+- biometrics = [] solo da de alta al usuario (al inscribir; en planes de
+  pareja, a cada persona una tras otra).
+- biometrics = ["fingerprint"]: ademas pone el lector en modo "ponga su dedo".
+  Este lector no registra caras desde el sistema: "face" falla con RL-103.
+
+El edge pregunta al backend el ID biometrico del miembro, crea al usuario si
+no existe (grupo bloqueado), registra lo pedido y al final sincroniza al
+miembro para dejarlo en el grupo que le toca. Corre en un hilo y el backend
+consulta el estado. Un registro a la vez. Los errores llevan un codigo RL-xxx
+(docs/CODIGOS_ERROR_LECTOR.md en gym-System).
 """
 from __future__ import annotations
 
@@ -22,12 +27,24 @@ from edge_service_zkteco.zk_client import ZkUnavailableError
 
 MAX_FINGER_INDEX = 9
 KEEP_FINISHED_JOBS = 20
+SUPPORTED_BIOMETRICS = ("fingerprint",)
+KNOWN_BIOMETRICS = ("fingerprint", "face")
 
 # Estados que ve el backend.
 PREPARING = "preparing"
+CREATING_USER = "creating_user"
 WAITING_FINGER = "waiting_finger"
+SYNCING = "syncing"
 DONE = "done"
 FAILED = "failed"
+
+
+class EnrollFailure(Exception):
+    def __init__(self, code: str, message: str, detail: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.detail = detail
 
 
 def _now_iso() -> str:
@@ -61,8 +78,12 @@ class RemoteEnrollManager:
         member_id = str(payload.get("member_id") or "").strip()
         if not member_id:
             raise ValueError("member_id es obligatorio.")
+        raw = payload.get("biometrics", ["fingerprint"])
+        if not isinstance(raw, list) or any(item not in KNOWN_BIOMETRICS for item in raw):
+            raise ValueError("biometrics debe ser una lista con fingerprint y/o face.")
+        biometrics = [item for item in KNOWN_BIOMETRICS if item in raw]
         try:
-            finger_index = int(payload.get("finger_index", 0))
+            finger_index = int(payload.get("finger_index", 6))
         except (TypeError, ValueError) as exc:
             raise ValueError("finger_index debe ser un numero de 0 a 9.") from exc
         if not 0 <= finger_index <= MAX_FINGER_INDEX:
@@ -70,20 +91,25 @@ class RemoteEnrollManager:
 
         with self._lock:
             if self._active_job_id is not None:
-                raise ValueError("Ya hay un registro de huella en curso en este lector. Espera a que termine.")
+                raise ValueError("Ya hay un registro en curso en este lector. Espera a que termine.")
             job_id = uuid.uuid4().hex
-            job = {
+            self._jobs[job_id] = {
                 "job_id": job_id,
                 "member_id": member_id,
+                "biometrics": biometrics,
                 "finger_index": finger_index,
                 "status": PREPARING,
                 "message": "Preparando el lector…",
                 "user_id": "",
                 "created_user": False,
+                "results": {"user": "pending", **{item: "pending" for item in biometrics}},
+                "error_code": "",
+                "error_detail": "",
+                "warning_code": "",
+                "warning_detail": "",
                 "started_at": _now_iso(),
                 "finished_at": "",
             }
-            self._jobs[job_id] = job
             self._active_job_id = job_id
             self._forget_old_jobs()
 
@@ -96,83 +122,119 @@ class RemoteEnrollManager:
         job_id = str(payload.get("job_id") or "").strip()
         with self._lock:
             if job_id not in self._jobs:
-                raise ValueError("No existe ese registro de huella (el edge pudo reiniciarse).")
+                raise ValueError("No existe ese registro (el edge pudo reiniciarse).")
         return {"success": True, **self._snapshot(job_id)}
 
     # ------------------------------------------------------------- worker
 
     def _run(self, job_id: str) -> None:
         job = self._jobs[job_id]
+        failure: EnrollFailure | None = None
         try:
-            self._enroll(job_id, job["member_id"], job["finger_index"])
+            self._enroll(job_id, job)
+        except EnrollFailure as exc:
+            failure = exc
         except ZkUnavailableError as exc:
-            self.logger.warning("ZK remote enroll failed (device). job=%s error=%s", job_id, exc)
-            self._update(job_id, status=FAILED, message=(
-                "El lector no confirmo el registro de la huella (no respondio o se agoto el tiempo)."
-            ))
+            failure = EnrollFailure("RL-101", "El lector no responde.", str(exc))
         except Exception as exc:  # noqa: BLE001
-            self.logger.exception("ZK remote enroll failed. job=%s", job_id)
-            self._update(job_id, status=FAILED, message=f"No se pudo registrar la huella: {exc}")
+            self.logger.exception("ZK remote enroll crashed. job=%s", job_id)
+            failure = EnrollFailure("RL-901", "Error inesperado del servicio del lector.",
+                                    f"{type(exc).__name__}: {exc}")
+        try:
+            # Con el usuario en el lector (aunque falle la huella) se aplica su
+            # acceso segun la membresia: lo nuevo nace bloqueado.
+            if job["results"].get("user") in ("created", "existing"):
+                self._sync(job_id, job, show_status=failure is None)
+            if failure is None:
+                self._update(job_id, status=DONE, message=self._done_message(job))
+            else:
+                self.logger.warning("ZK remote enroll failed. job=%s code=%s %s (%s)",
+                                    job_id, failure.code, failure.message, failure.detail)
+                self._update(job_id, status=FAILED, message=failure.message,
+                             error_code=failure.code, error_detail=failure.detail)
         finally:
             with self._lock:
                 if self._active_job_id == job_id:
                     self._active_job_id = None
                 job["finished_at"] = job["finished_at"] or _now_iso()
 
-    def _enroll(self, job_id: str, member_id: str, finger_index: int) -> None:
+    def _enroll(self, job_id: str, job: dict[str, Any]) -> None:
+        unsupported = [item for item in job["biometrics"] if item not in SUPPORTED_BIOMETRICS]
+        if unsupported:
+            raise EnrollFailure("RL-103", "Este lector solo registra huella desde el sistema.",
+                                f"No soportado: {', '.join(unsupported)}")
+        member_id = job["member_id"]
         assignments = self.backend_api.fetch_user_roles(member_ids=[member_id])
         assignment = next((item for item in assignments if item.member_id == member_id), None)
-        if assignment is None:
-            self._update(job_id, status=FAILED, message="El miembro no tiene ID biometrico en el sistema.")
-            return
-        identifier = (self.identifier_for(assignment) or "").strip()
+        identifier = (self.identifier_for(assignment) or "").strip() if assignment else ""
         if not identifier:
-            self._update(job_id, status=FAILED, message="El miembro no tiene ID biometrico en el sistema.")
-            return
-        self._update(job_id, user_id=identifier)
+            raise EnrollFailure("RL-003", "El miembro no tiene ID biometrico en el sistema.")
+        self._update(job_id, user_id=identifier, status=CREATING_USER, message="Dando de alta en el lector…")
         if identifier in self.config.zk_protected_user_ids:
-            self._update(job_id, status=FAILED, message=f"El ID {identifier} esta protegido en este lector.")
-            return
+            raise EnrollFailure("RL-201", f"El ID {identifier} esta protegido en este lector.")
 
         existing = next(
             (user for user in self.device.get_users() if (user.user_id or "").strip() == identifier),
             None,
         )
         if existing is not None and existing.privilege & ~USER_DISABLED_FLAG:
-            self._update(job_id, status=FAILED, message=f"El ID {identifier} es administrador del lector.")
-            return
+            raise EnrollFailure("RL-201", f"El ID {identifier} es administrador del lector.")
         if existing is None:
-            # Se crea bloqueado; el sync de abajo lo deja en el grupo correcto.
-            existing, created = self.device.create_user(
-                identifier, assignment.member_name or identifier, self.config.zk_blocked_group_id
-            )
+            try:
+                existing, created = self.device.create_user(
+                    identifier, assignment.member_name or identifier, self.config.zk_blocked_group_id
+                )
+            except ZkUnavailableError as exc:
+                raise EnrollFailure("RL-202", "El lector no acepto dar de alta al usuario.", str(exc)) from exc
             self._update(job_id, created_user=created)
+            self._set_result(job_id, "user", "created" if created else "existing")
             self.logger.info("ZK user created for enroll. user_id=%s uid=%s", identifier, existing.uid)
+        else:
+            self._set_result(job_id, "user", "existing")
 
-        self._update(
-            job_id,
-            status=WAITING_FINGER,
-            message="Pide a la persona que ponga el mismo dedo 3 veces en el lector.",
-        )
-        enrolled = self.device.enroll_fingerprint(
-            existing, finger_index, timeout=self.config.zk_enroll_timeout_seconds
-        )
-        if not enrolled:
-            self._update(job_id, status=FAILED, message=(
-                "El lector no guardo la huella. Puede ser un dedo ya registrado, que se acabo el "
-                "tiempo o que el lector no acepta el registro remoto."
-            ))
-            return
+        if "fingerprint" in job["biometrics"]:
+            self._update(job_id, status=WAITING_FINGER,
+                         message="Pide a la persona que ponga el mismo dedo 3 veces en el lector.")
+            try:
+                enrolled = self.device.enroll_fingerprint(
+                    existing, job["finger_index"], timeout=self.config.zk_enroll_timeout_seconds
+                )
+            except ZkUnavailableError as exc:
+                self._set_result(job_id, "fingerprint", "failed")
+                raise EnrollFailure(
+                    "RL-301", "No se capturo la huella: nadie puso el dedo a tiempo o el lector no respondio.",
+                    str(exc),
+                ) from exc
+            if not enrolled:
+                self._set_result(job_id, "fingerprint", "failed")
+                raise EnrollFailure(
+                    "RL-302", "El lector no guardo la huella (dedo ya registrado, tiempo agotado o "
+                    "el lector no acepta el registro remoto).",
+                )
+            self._set_result(job_id, "fingerprint", "saved")
+            self.logger.info("ZK fingerprint enrolled. user_id=%s finger=%s", identifier, job["finger_index"])
 
+    def _sync(self, job_id: str, job: dict[str, Any], show_status: bool) -> None:
+        if show_status:
+            self._update(job_id, status=SYNCING, message="Aplicando el acceso segun la membresia…")
         try:
-            self.sync_member(member_id)
+            self.sync_member(job["member_id"])
         except Exception as exc:  # noqa: BLE001
-            # La huella si quedo; el sync programado ajusta el grupo despues.
-            self.logger.warning("ZK sync after enroll failed. member=%s error=%s", member_id, exc)
-        self.logger.info("ZK fingerprint enrolled. user_id=%s finger=%s", identifier, finger_index)
-        self._update(job_id, status=DONE, message="Huella registrada en el lector.")
+            # Lo registrado si quedo; el sync programado ajusta el grupo despues.
+            self.logger.warning("ZK sync after enroll failed. member=%s error=%s", job["member_id"], exc)
+            self._update(job_id, warning_code="RL-501", warning_detail=str(exc))
+
+    def _done_message(self, job: dict[str, Any]) -> str:
+        user = "Alta en el lector lista" if job["created_user"] else "Usuario ya estaba en el lector"
+        if job["results"].get("fingerprint") == "saved":
+            return f"{user}: huella guardada."
+        return f"{user}."
 
     # ------------------------------------------------------------ helpers
+
+    def _set_result(self, job_id: str, key: str, value: str) -> None:
+        with self._lock:
+            self._jobs[job_id]["results"][key] = value
 
     def _update(self, job_id: str, **changes: Any) -> None:
         with self._lock:
@@ -183,7 +245,9 @@ class RemoteEnrollManager:
 
     def _snapshot(self, job_id: str) -> dict[str, Any]:
         with self._lock:
-            return dict(self._jobs[job_id])
+            job = dict(self._jobs[job_id])
+            job["results"] = dict(job["results"])
+            return job
 
     def _forget_old_jobs(self) -> None:
         finished = [
@@ -192,4 +256,3 @@ class RemoteEnrollManager:
         ]
         for job_id in finished[: max(0, len(finished) - KEEP_FINISHED_JOBS)]:
             self._jobs.pop(job_id, None)
-
