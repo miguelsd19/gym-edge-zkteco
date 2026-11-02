@@ -152,6 +152,35 @@ que viene de ProGym: [GUIA_RESPALDO_PROGYM.md](GUIA_RESPALDO_PROGYM.md).
 python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backups/sucursal
 ```
 
+## Registro remoto de huella (apagado por defecto)
+
+Con `ZK_REMOTE_ENROLL_ENABLED=true` el backend puede pedir registrar la huella de un miembro
+(boton "Registrar huella" en Miembros, flag `remote_fingerprint_enroll` del backend). El edge:
+
+1. Lee del backend el ID biometrico del miembro (mismo endpoint del sync).
+2. Si no existe en el lector, lo crea con un UID libre en el grupo bloqueado (`ZK_BLOCKED_GROUP_ID`).
+3. Pone el lector en modo enrolamiento (`CMD_STARTENROLL`): la persona pone el mismo dedo 3 veces.
+4. Verifica que la huella quedo guardada y corre el sync de ese miembro (grupo correcto).
+
+Corre en segundo plano: `POST EDGE_ENROLL_PATH` (`/zkteco/enroll`, `{member_id, finger_index}`)
+devuelve un `job_id` y `POST EDGE_ENROLL_STATUS_PATH` (`/zkteco/enroll/status`, `{job_id}`) da el
+estado: `preparing`, `waiting_finger`, `done` o `failed`. Un solo registro a la vez. Mientras el
+lector espera el dedo (hasta `ZK_ENROLL_TIMEOUT_SECONDS`) el edge no recibe entradas en vivo; el
+lector sigue abriendo solo. Nunca toca administradores del lector ni `ZK_PROTECTED_USER_IDS`.
+
+**Antes de encenderlo, probar que el firmware lo acepta** (con el servicio detenido y alguien junto
+al lector):
+
+```bash
+sc stop GymEdgeZkteco
+.venv\Scripts\python -m edge_service_zkteco.enroll_probe --host 192.168.1.201
+sc start GymEdgeZkteco
+```
+
+Crea el usuario de prueba `990001` (bloqueado), pide el dedo, revisa que la huella se guardo y lo
+borra. Si el ID ya existe no hace nada. Salida `0` = soportado; `2` = el lector no guardo la huella
+(repetir con `--verbose` y guardar la salida para diagnostico).
+
 ## Ejecucion
 
 Desde la raiz de este repo:

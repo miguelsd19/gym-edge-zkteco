@@ -115,6 +115,10 @@ class EdgeConfig:
     edge_role_sync_path: str
     edge_delete_users_path: str
     zk_protected_user_ids: frozenset[str]
+    zk_remote_enroll_enabled: bool
+    edge_enroll_path: str
+    edge_enroll_status_path: str
+    zk_enroll_timeout_seconds: float
     zk_user_role_sync_enabled: bool
     zk_access_group_cache_seconds: int
     zk_access_group_cache_file: Path
@@ -221,6 +225,16 @@ class EdgeConfig:
             ).strip()
             or "/zkteco/users/delete",
             zk_protected_user_ids=_get_id_set("ZK_PROTECTED_USER_IDS"),
+            # Apagado por defecto: encenderlo solo despues de que enroll_probe
+            # confirme que el firmware del lector acepta el enrolamiento remoto.
+            zk_remote_enroll_enabled=_get_bool("ZK_REMOTE_ENROLL_ENABLED", False),
+            edge_enroll_path=os.getenv("EDGE_ENROLL_PATH", "/zkteco/enroll").strip()
+            or "/zkteco/enroll",
+            edge_enroll_status_path=os.getenv(
+                "EDGE_ENROLL_STATUS_PATH", "/zkteco/enroll/status"
+            ).strip()
+            or "/zkteco/enroll/status",
+            zk_enroll_timeout_seconds=max(30.0, _get_float("ZK_ENROLL_TIMEOUT_SECONDS", 240.0)),
             zk_user_role_sync_enabled=_get_bool("ZK_USER_ROLE_SYNC_ENABLED", True),
             zk_access_group_cache_seconds=max(
                 0,
