@@ -155,7 +155,7 @@ python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backup
 ## Registro remoto de huella (apagado por defecto)
 
 Con `ZK_REMOTE_ENROLL_ENABLED=true` el backend puede pedir registrar la huella de un miembro
-(boton "Registrar huella" en Miembros, flag `remote_fingerprint_enroll` del backend). El edge:
+(boton "Registrar huella" en Miembros, flag `zkteco_remote_enroll` del backend). El edge:
 
 1. Lee del backend el ID biometrico del miembro (mismo endpoint del sync).
 2. Si no existe en el lector, lo crea con un UID libre en el grupo bloqueado (`ZK_BLOCKED_GROUP_ID`).

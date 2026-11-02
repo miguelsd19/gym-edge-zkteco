@@ -8,7 +8,7 @@ con `AGENTS.md` antes de ejecutar nada. Las reglas de `AGENTS.md` siguen aplican
 Saber si el SpeedFace-V5L de Norias (firmware `Ver 6.60 Aug 19 2021`) acepta el **registro remoto
 de huella**: que el sistema le diga al lector "pide el dedo de este usuario" y el lector lo guarde.
 De eso depende el botón "Registrar huella" de la app. El código ya está en `main`, pero apagado
-(`ZK_REMOTE_ENROLL_ENABLED=false` en el edge y flag `remote_fingerprint_enroll` apagado en el
+(`ZK_REMOTE_ENROLL_ENABLED=false` en el edge y flag `zkteco_remote_enroll` apagado en el
 backend).
 
 **Esta tarea es solo la prueba.** No enciendas `ZK_REMOTE_ENROLL_ENABLED`, no reconstruyas el
@@ -121,4 +121,4 @@ Si el código es `2`, también es útil saber si el lector **mostró la pantalla
 
 Si salió `0`, el siguiente paso **no lo hace este agente sin instrucción del dueño**: reconstruir el
 `.exe`, poner `ZK_REMOTE_ENROLL_ENABLED=true` en `dist\.env` y encender el flag
-`remote_fingerprint_enroll` de Norias en el backend.
+`zkteco_remote_enroll` de Norias en el backend.
