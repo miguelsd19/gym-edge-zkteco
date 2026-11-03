@@ -45,9 +45,10 @@ FAILED = "failed"
 class EnrollRequestError(ValueError):
     """Peticion invalida o lector ocupado: el control server responde 400 con el codigo."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, active_job_id: str = ""):
         super().__init__(message)
         self.code = code
+        self.active_job_id = active_job_id
 
 
 class EnrollFailure(Exception):
@@ -102,7 +103,12 @@ class RemoteEnrollManager:
 
         with self._lock:
             if self._active_job_id is not None:
-                raise EnrollRequestError("RL-012", "Ya hay un registro en curso en este lector. Espera a que termine.")
+                # Con el id el backend puede retomar el registro si es del mismo
+                # miembro (p. ej. el inicio anterior se agoto en la red).
+                raise EnrollRequestError(
+                    "RL-012", "Ya hay un registro en curso en este lector. Espera a que termine.",
+                    active_job_id=self._active_job_id,
+                )
             job_id = uuid.uuid4().hex
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -218,8 +224,8 @@ class RemoteEnrollManager:
             self._set_result(job_id, "user", "existing")
 
         # Cada biometrico se intenta aunque falle el anterior (la persona ya esta
-        # frente al lector): basta con que quede uno. Al final se reportan los
-        # que fallaron con su codigo.
+        # frente al lector). Si alguno falla, el trabajo termina en failed con el
+        # codigo del primero que fallo; lo guardado queda en results.
         failures: list[EnrollFailure] = []
         steps = (("fingerprint", self._enroll_fingerprint), ("face", self._enroll_face))
         for key, step in steps:
