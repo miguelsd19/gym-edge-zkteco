@@ -117,11 +117,23 @@ class EdgeControlServer:
                             "success": False,
                             "message": str(exc) or "Invalid request.",
                             "error_code": getattr(exc, "code", ""),
+                            "active_job_id": getattr(exc, "active_job_id", ""),
                         },
                     )
                     return
                 except Exception as exc:  # noqa: BLE001
                     outer.logger.exception("Edge control command failed: %s", exc)
+                    if self.path in outer.extra_routes:
+                        # 500 (no 502): el backend no debe confundirlo con un proxy sin edge.
+                        self._send_json(
+                            500,
+                            {
+                                "success": False,
+                                "message": f"Error inesperado del servicio del lector: {exc}",
+                                "error_code": "RL-901",
+                            },
+                        )
+                        return
                     self._send_json(
                         502,
                         {
