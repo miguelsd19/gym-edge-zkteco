@@ -378,6 +378,27 @@ class RemoteEnrollManagerTests(unittest.TestCase):
         self.assertEqual(result["results"], {"user": "created", "face": "saved"})
         self.assertEqual(device.enrolled, [])
 
+    def test_face_is_tried_even_if_fingerprint_fails(self):
+        device = _FakeDevice(enroll_result=False)
+        manager, synced = _manager(device)
+        result = _wait(manager, manager.handle_start(
+            {"member_id": "m-1", "biometrics": ["fingerprint", "face"]})["job_id"])
+        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-302"))
+        self.assertEqual(result["results"], {"user": "created", "fingerprint": "failed", "face": "saved"})
+        self.assertEqual(device.order, ["fingerprint", "face"])
+        self.assertIn("La cara si quedo guardada.", result["message"])
+        self.assertEqual(synced, ["m-1"])
+
+    def test_both_failing_reports_both_codes(self):
+        device = _FakeDevice(enroll_result=False, face_result="no_capture")
+        manager, _ = _manager(device)
+        result = _wait(manager, manager.handle_start(
+            {"member_id": "m-1", "biometrics": ["fingerprint", "face"]})["job_id"])
+        self.assertEqual(result["error_code"], "RL-302")
+        self.assertIn("RL-302", result["error_detail"])
+        self.assertIn("RL-401", result["error_detail"])
+        self.assertEqual(result["results"], {"user": "created", "fingerprint": "failed", "face": "failed"})
+
     def test_face_failures_have_codes_and_keep_the_fingerprint(self):
         for face_result, code in (
             ("no_capture", "RL-401"),

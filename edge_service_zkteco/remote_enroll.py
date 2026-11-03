@@ -189,51 +189,70 @@ class RemoteEnrollManager:
         else:
             self._set_result(job_id, "user", "existing")
 
-        if "fingerprint" in job["biometrics"]:
-            self._update(job_id, status=WAITING_FINGER,
-                         message="Pide a la persona que ponga el mismo dedo 3 veces en el lector.")
+        # Cada biometrico se intenta aunque falle el anterior (la persona ya esta
+        # frente al lector): basta con que quede uno. Al final se reportan los
+        # que fallaron con su codigo.
+        failures: list[EnrollFailure] = []
+        steps = (("fingerprint", self._enroll_fingerprint), ("face", self._enroll_face))
+        for key, step in steps:
+            if key not in job["biometrics"]:
+                continue
             try:
-                enrolled = self.device.enroll_fingerprint(
-                    existing, job["finger_index"], timeout=self.config.zk_enroll_timeout_seconds
-                )
-            except ZkUnavailableError as exc:
-                self._set_result(job_id, "fingerprint", "failed")
-                raise EnrollFailure(
-                    "RL-301", "No se capturo la huella: nadie puso el dedo a tiempo o el lector no respondio.",
-                    str(exc),
-                ) from exc
-            if not enrolled:
-                self._set_result(job_id, "fingerprint", "failed")
-                raise EnrollFailure(
-                    "RL-302", "El lector no guardo la huella (dedo ya registrado, tiempo agotado o "
-                    "el lector no acepta el registro remoto).",
-                )
-            self._set_result(job_id, "fingerprint", "saved")
-            self.logger.info("ZK fingerprint enrolled. user_id=%s finger=%s", identifier, job["finger_index"])
+                step(job_id, job, existing, identifier)
+            except EnrollFailure as failure:
+                self._set_result(job_id, key, "failed")
+                failures.append(failure)
+        if failures:
+            saved = [label for key, label in (("fingerprint", "huella"), ("face", "cara"))
+                     if job["results"].get(key) == "saved"]
+            first = failures[0]
+            message = " ".join(failure.message for failure in failures)
+            if saved:
+                message += f" La {' y la '.join(saved)} si quedo guardada."
+            raise EnrollFailure(
+                first.code, message,
+                " | ".join(f"{failure.code}: {failure.detail or failure.message}" for failure in failures)
+                if len(failures) > 1 else first.detail,
+            )
 
-        if "face" in job["biometrics"]:
-            self._update(job_id, status=WAITING_FACE,
-                         message="Pide a la persona que se ponga frente al lector para registrar su cara.")
-            try:
-                result = self.device.enroll_face(existing, timeout=self.config.zk_enroll_timeout_seconds)
-            except ZkUnavailableError as exc:
-                self._set_result(job_id, "face", "failed")
-                raise EnrollFailure(
-                    "RL-401", "No se capturo la cara: el lector no respondio durante el registro.", str(exc),
-                ) from exc
-            if result == FACE_NO_CAPTURE:
-                self._set_result(job_id, "face", "failed")
-                raise EnrollFailure(
-                    "RL-401", "No se capturo la cara: nadie se puso frente al lector a tiempo.",
-                )
-            if result != FACE_SAVED:
-                self._set_result(job_id, "face", "failed")
-                raise EnrollFailure(
-                    "RL-402", "El lector no confirmo que guardo la cara (mala captura, o la persona ya "
-                    "tenia una cara registrada y se reemplazo).",
-                )
-            self._set_result(job_id, "face", "saved")
-            self.logger.info("ZK face enrolled. user_id=%s", identifier)
+    def _enroll_fingerprint(self, job_id: str, job: dict[str, Any], existing: Any, identifier: str) -> None:
+        self._update(job_id, status=WAITING_FINGER,
+                     message="Pide a la persona que ponga el mismo dedo 3 veces en el lector.")
+        try:
+            enrolled = self.device.enroll_fingerprint(
+                existing, job["finger_index"], timeout=self.config.zk_enroll_timeout_seconds
+            )
+        except ZkUnavailableError as exc:
+            raise EnrollFailure(
+                "RL-301", "No se capturo la huella: nadie puso el dedo a tiempo o el lector no respondio.",
+                str(exc),
+            ) from exc
+        if not enrolled:
+            raise EnrollFailure(
+                "RL-302", "El lector no guardo la huella (dedo ya registrado, tiempo agotado o "
+                "el lector no acepta el registro remoto).",
+            )
+        self._set_result(job_id, "fingerprint", "saved")
+        self.logger.info("ZK fingerprint enrolled. user_id=%s finger=%s", identifier, job["finger_index"])
+
+    def _enroll_face(self, job_id: str, job: dict[str, Any], existing: Any, identifier: str) -> None:
+        self._update(job_id, status=WAITING_FACE,
+                     message="Pide a la persona que se ponga frente al lector para registrar su cara.")
+        try:
+            result = self.device.enroll_face(existing, timeout=self.config.zk_enroll_timeout_seconds)
+        except ZkUnavailableError as exc:
+            raise EnrollFailure(
+                "RL-401", "No se capturo la cara: el lector no respondio durante el registro.", str(exc),
+            ) from exc
+        if result == FACE_NO_CAPTURE:
+            raise EnrollFailure("RL-401", "No se capturo la cara: nadie se puso frente al lector a tiempo.")
+        if result != FACE_SAVED:
+            raise EnrollFailure(
+                "RL-402", "El lector no confirmo que guardo la cara (mala captura, o la persona ya "
+                "tenia una cara registrada y se reemplazo).",
+            )
+        self._set_result(job_id, "face", "saved")
+        self.logger.info("ZK face enrolled. user_id=%s", identifier)
 
     def _sync(self, job_id: str, job: dict[str, Any], show_status: bool) -> None:
         if show_status:
