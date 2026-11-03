@@ -83,6 +83,12 @@ Historia que explica el estado del lector:
   cambio, con ProGym ya apagado y la importación de miembros al día (ver abajo).
 - Abrir la puerta de prueba, instalar o reiniciar servicios, cambiar cualquier configuración del
   lector (red, comm key, nube/ADMS, grupos).
+- Correr `enroll_probe` (prueba del registro remoto de huella): **escribe en el lector** un usuario
+  de prueba (`990001`, bloqueado) y lo borra al final. Requiere detener el servicio y a alguien
+  junto al lector. Nunca uses un `--user-id` que ya exista ni los IDs protegidos (98989/99999 son
+  admins de ProGym). Encender `ZK_REMOTE_ENROLL_ENABLED` solo si la prueba salio con código 0.
+  El procedimiento completo está en `PRUEBA_REGISTRO_HUELLA.md` (usa
+  `windows\probar_registro_huella.bat`).
 - Cualquier cosa que no esté en esta guía o en `GUIA_INSTALACION_WINDOWS.md`.
 
 ## Orden del día del cambio (Norias)

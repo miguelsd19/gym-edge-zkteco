@@ -99,6 +99,31 @@ class EdgeControlServerTests(unittest.TestCase):
             _request(self._url("/door/open"))
         self.assertEqual(ctx.exception.code, 400)
 
+    def test_extra_routes_are_dispatched_and_absent_by_default(self):
+        logger = logging.getLogger("test-control-server")
+        calls = []
+        server = EdgeControlServer(
+            bind_host="127.0.0.1",
+            port=0,
+            path="/door/open",
+            sync_user_roles_path="/hikvision/user-role-sync",
+            bearer_token="token",
+            logger=logger,
+            on_open=lambda payload: {"success": True},
+            extra_routes={"enroll": lambda payload: calls.append(payload) or {"success": True, "job_id": "j1"}},
+        )
+        port = server._server.server_address[1]
+        server.start()
+        self.addCleanup(server._server.shutdown)
+
+        status, body = _request(f"http://127.0.0.1:{port}/enroll", payload={"member_id": "m-1"})
+
+        self.assertEqual((status, body["job_id"]), (200, "j1"))
+        self.assertEqual(calls, [{"member_id": "m-1"}])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            _request(self._url("/enroll"), payload={})
+        self.assertEqual(ctx.exception.code, 404)
+
     def test_get_healthcheck_reports_zkteco_device(self):
         status, body = _request(self._url("/door/open"), method="GET")
 

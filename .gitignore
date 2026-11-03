@@ -22,3 +22,6 @@ dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Salidas de windows\probar_registro_huella.bat
+pruebas/

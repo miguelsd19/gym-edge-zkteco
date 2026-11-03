@@ -152,6 +152,45 @@ que viene de ProGym: [GUIA_RESPALDO_PROGYM.md](GUIA_RESPALDO_PROGYM.md).
 python3 -m edge_service_zkteco.backup_terminal --host 192.168.1.201 --out backups/sucursal
 ```
 
+## Registro remoto de huella (apagado por defecto)
+
+Con `ZK_REMOTE_ENROLL_ENABLED=true` el backend puede dar de alta a un miembro en el lector y pedir
+su huella (flag `zkteco_remote_enroll` del backend). Mismo contrato que el edge Hikvision:
+
+- `POST EDGE_ENROLL_PATH` (`/enroll`) con `{member_id, biometrics, finger_index}` devuelve un
+  `job_id`; `POST EDGE_ENROLL_STATUS_PATH` (`/enroll/status`, `{job_id}`) da el estado:
+  `preparing`, `creating_user`, `waiting_finger`, `syncing`, `done` o `failed`.
+- `biometrics = []` solo da de alta al usuario (al inscribir; en planes de pareja, a cada persona
+  una tras otra). `["fingerprint"]` pone el lector en modo enrolamiento (`CMD_STARTENROLL`): la
+  persona pone el mismo dedo 3 veces. `["face"]` usa el mismo comando con el índice 111 (como
+  `StartEnrollEx` del SDK; pyzk no lo trae) y se confirma con el conteo de caras del lector
+  (RL-401 si nadie se puso enfrente, RL-402 si no se guardó). Con ambos, primero huella y luego cara.
+- Si el usuario no existe en el lector, se crea con un UID libre en el grupo bloqueado
+  (`ZK_BLOCKED_GROUP_ID`); al final se corre el sync de ese miembro (grupo correcto).
+- Los errores llevan código RL-xxx y detalle (`error_code`, `error_detail`; ver
+  `docs/CODIGOS_ERROR_LECTOR.md` en gym-System). Un sync fallido al final es un aviso (`RL-501`).
+
+Un solo registro a la vez. Mientras el lector espera el dedo (hasta `ZK_ENROLL_TIMEOUT_SECONDS`) el
+edge no recibe entradas en vivo; el lector sigue abriendo solo. Nunca toca administradores del
+lector ni `ZK_PROTECTED_USER_IDS`.
+
+**Antes de encenderlo, probar que el firmware lo acepta** (con el servicio detenido y alguien junto
+al lector):
+
+```bash
+sc stop GymEdgeZkteco
+.venv\Scripts\python -m edge_service_zkteco.enroll_probe --host 192.168.1.201 --modo ambas
+sc start GymEdgeZkteco
+```
+
+En Windows, `windows\probar_registro_huella.bat` hace esos tres pasos, guarda la salida en
+`pruebas\` y siempre vuelve a arrancar el servicio. Guía para el agente de la PC:
+`PRUEBA_REGISTRO_HUELLA.md`.
+
+Crea el usuario de prueba `990001` (bloqueado), pide el dedo, revisa que la huella se guardo y lo
+borra. Si el ID ya existe no hace nada. Salida `0` = soportado; `2` = el lector no guardo la huella
+(repetir con `--verbose` y guardar la salida para diagnostico).
+
 ## Ejecucion
 
 Desde la raiz de este repo:

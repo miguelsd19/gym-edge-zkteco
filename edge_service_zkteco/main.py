@@ -17,6 +17,7 @@ from edge_service_zkteco.failed_attempts import FailedAttemptStore
 from edge_service_zkteco.file_event_source import FileEventSource
 from edge_service_zkteco.logging_setup import configure_logging
 from edge_service_zkteco.models import USER_DISABLED_FLAG, FailedAttempt, ZkUserInfo
+from edge_service_zkteco.remote_enroll import RemoteEnrollManager
 from edge_service_zkteco.state_store import ProcessedEventStore
 from edge_service_zkteco.zk_client import ZkClient, ZkCommandRejectedError, ZkUnavailableError
 
@@ -855,6 +856,31 @@ def run() -> None:
         device.start()
 
     if config.edge_control_enabled:
+        extra_routes = {}
+        if config.zk_remote_enroll_enabled and not is_file_mode:
+            enroll_manager = RemoteEnrollManager(
+                logger=logger,
+                config=config,
+                backend_api=backend_api,
+                device=device,
+                identifier_for=lambda assignment: _identifier_for_assignment(
+                    assignment=assignment, access_mode=config.access_mode
+                ),
+                sync_member=lambda member_id: _sync_user_roles(
+                    logger=logger,
+                    config=config,
+                    backend_api=backend_api,
+                    device=device,
+                    reason="fingerprint-enroll",
+                    member_ids=[member_id],
+                    sync_progress=sync_progress,
+                    event_log=reader_sync_events,
+                ),
+            )
+            extra_routes = {
+                config.edge_enroll_path: enroll_manager.handle_start,
+                config.edge_enroll_status_path: enroll_manager.handle_status,
+            }
         control_server = EdgeControlServer(
             bind_host=config.edge_control_bind_host,
             port=config.edge_control_port,
@@ -884,6 +910,7 @@ def run() -> None:
                 config=config,
                 device=device,
             ),
+            extra_routes=extra_routes,
         )
         control_server.start()
 
@@ -891,7 +918,7 @@ def run() -> None:
         (
             "ZKTeco edge service started. access_mode=%s, event_source=%s, device=%s:%s, "
             "open_door_on_grant=%s, role_sync_enabled=%s, "
-            "edge_control_enabled=%s, edge_control_port=%s."
+            "edge_control_enabled=%s, edge_control_port=%s, remote_enroll_enabled=%s."
         ),
         config.access_mode,
         config.zk_event_source,
@@ -901,6 +928,7 @@ def run() -> None:
         config.zk_user_role_sync_enabled,
         config.edge_control_enabled,
         config.edge_control_port,
+        config.zk_remote_enroll_enabled,
     )
 
     role_sync_supported = not is_file_mode and config.zk_user_role_sync_enabled

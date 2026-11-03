@@ -26,6 +26,7 @@ class EdgeControlServer:
         on_sync_user_roles: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         delete_users_path: str | None = None,
         on_delete_users: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        extra_routes: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] | None = None,
     ) -> None:
         self.bind_host = bind_host
         self.port = port
@@ -44,6 +45,12 @@ class EdgeControlServer:
         self.known_paths = {self.path} | self.sync_paths
         if self.delete_users_path:
             self.known_paths.add(self.delete_users_path)
+        # Rutas opcionales (p. ej. enrolamiento remoto): solo existen si se pasan.
+        self.extra_routes = {
+            (path if path.startswith("/") else f"/{path}"): handler
+            for path, handler in (extra_routes or {}).items()
+        }
+        self.known_paths |= set(self.extra_routes)
         self.bearer_token = bearer_token
         self.logger = logger
         self.on_open = on_open
@@ -94,6 +101,8 @@ class EdgeControlServer:
                         response_payload = outer.on_open(payload)
                     elif self.path == outer.delete_users_path:
                         response_payload = outer.on_delete_users(payload)
+                    elif self.path in outer.extra_routes:
+                        response_payload = outer.extra_routes[self.path](payload)
                     elif outer.on_sync_user_roles is not None:
                         response_payload = outer.on_sync_user_roles(payload)
                     else:
