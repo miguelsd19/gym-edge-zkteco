@@ -130,3 +130,46 @@ class EdgeControlServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["success"])
         self.assertEqual(body["device"], "zkteco")
+
+
+class EnrollRouteErrorTests(unittest.TestCase):
+    def _server(self, handler):
+        logger = logging.getLogger("test-control-server-enroll")
+        logger.addHandler(logging.NullHandler())
+        logger.disabled = True
+        server = EdgeControlServer(
+            bind_host="127.0.0.1", port=0, path="/door/open", sync_user_roles_path="/hikvision/user-role-sync",
+            bearer_token="token", logger=logger, on_open=lambda payload: {"success": True},
+            extra_routes={"/enroll": handler},
+        )
+        server.start()
+        self.addCleanup(server._server.shutdown)
+        return f"http://127.0.0.1:{server._server.server_address[1]}/enroll"
+
+    def _error(self, url):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            _request(url)
+        return ctx.exception.code, json.loads(ctx.exception.read().decode("utf-8"))
+
+    def test_busy_reader_returns_code_and_active_job_id(self):
+        from edge_service_zkteco.remote_enroll import EnrollRequestError
+
+        def busy(payload):
+            raise EnrollRequestError("RL-012", "Ya hay un registro en curso.", active_job_id="j-activo")
+
+        status, body = self._error(self._server(busy))
+        self.assertEqual((status, body["error_code"], body["active_job_id"]), (400, "RL-012", "j-activo"))
+
+    def test_unexpected_enroll_error_is_500_rl901(self):
+        def boom(payload):
+            raise RuntimeError("can't start new thread")
+
+        status, body = self._error(self._server(boom))
+        self.assertEqual((status, body["error_code"]), (500, "RL-901"))
+
+    def test_value_error_without_code_on_enroll_is_500_rl901(self):
+        def bug(payload):
+            raise ValueError("invalid literal for int()")
+
+        status, body = self._error(self._server(bug))
+        self.assertEqual((status, body["error_code"]), (500, "RL-901"))
