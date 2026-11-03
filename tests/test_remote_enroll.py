@@ -1,5 +1,6 @@
 import io
 import logging
+import socket
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -10,8 +11,13 @@ from edge_service_zkteco import enroll_probe
 from edge_service_zkteco.models import UserRoleAssignment, ZkUserInfo
 from edge_service_zkteco.remote_enroll import DONE, FAILED, RemoteEnrollManager
 from edge_service_zkteco.zk_client import (
+    FACE_NO_CAPTURE,
+    FACE_NOT_SAVED,
+    FACE_SAVED,
+    ZkCommandRejectedError,
     ZkUnavailableError,
     create_device_user,
+    enroll_device_face,
     enroll_device_fingerprint,
 )
 
@@ -19,6 +25,12 @@ from edge_service_zkteco.zk_client import (
 class _FakeSock:
     def __init__(self):
         self.timeout = 5.0
+        self.packets = []
+
+    def recv(self, size):
+        if self.packets:
+            return self.packets.pop(0)
+        raise socket.timeout()
 
     def gettimeout(self):
         return self.timeout
@@ -31,6 +43,7 @@ class _FakeConn:
     """Lector SpeedFace (registro de 72 bytes) en memoria."""
 
     user_packet_size = 72
+    tcp = True
 
     def __init__(self, users=(), enroll_result=True, store_template=True):
         self.users = [SimpleNamespace(**user) for user in users]
@@ -43,6 +56,20 @@ class _FakeConn:
         self._ZK__sock = _FakeSock()
         self._ZK__data = b""
         self.disconnected = False
+        self.faces = 29
+        self.face_packets = []
+        self.face_saves = True
+
+    # registro de cara
+    def read_sizes(self):
+        return True
+
+    def cancel_capture(self):
+        return True
+
+    def _ZK__ack_ok(self):
+        if self.face_saves:
+            self.faces += 1
 
     # pyzk
     def connect(self):
@@ -60,10 +87,13 @@ class _FakeConn:
             password=password, group_id=group_id, card=card,
         ))
 
-    def _ZK__send_command(self, command, payload, size):
+    def _ZK__send_command(self, command, payload=b"", size=8):
         if command == 22:
             uid, group = unpack("<II", payload)
             self.groups[uid] = group
+            return {"status": True}
+        if command == 61:
+            self._ZK__sock.packets = list(self.face_packets)
             return {"status": True}
         if command == 21:
             uid = unpack("<I", payload)[0]
@@ -137,6 +167,75 @@ class DeviceHelpersTests(unittest.TestCase):
         self.assertFalse(enroll_device_fingerprint(conn, user, 6))
 
 
+class _FaceSock(_FakeSock):
+    def __init__(self, packets):
+        super().__init__()
+        self.packets = list(packets)
+
+    def recv(self, size):
+        if self.packets:
+            return self.packets.pop(0)
+        raise socket.timeout()
+
+
+class _FaceConn:
+    tcp = True
+
+    def __init__(self, packets=(), saves=True, accepts=True):
+        self._ZK__sock = _FaceSock(packets)
+        self.faces = 29
+        self.saves = saves
+        self.accepts = accepts
+        self.sent = []
+        self.cancelled = 0
+        self.acks = 0
+
+    def read_sizes(self):
+        return True
+
+    def cancel_capture(self):
+        self.cancelled += 1
+
+    def _ZK__send_command(self, command, payload=b"", size=8):
+        self.sent.append((command, payload))
+        return {"status": self.accepts}
+
+    def _ZK__ack_ok(self):
+        self.acks += 1
+
+    def refresh_data(self):
+        if self.saves and self.acks:
+            self.faces += 1
+
+
+class FaceEnrollTests(unittest.TestCase):
+    user = ZkUserInfo(uid=3, user_id="3800", name="Ana", privilege=0, password="", group_id="99", card=0)
+
+    def test_face_saved_when_count_goes_up(self):
+        conn = _FaceConn(packets=[b"evt1", b"evt2"])
+        result = enroll_device_face(conn, self.user, timeout=2, quiet_seconds=0.05)
+        self.assertEqual(result, FACE_SAVED)
+        command, payload = conn.sent[0]
+        self.assertEqual(command, 61)
+        self.assertEqual(payload[:4], b"3800")
+        self.assertEqual(payload[24], 111)
+        self.assertEqual(conn._ZK__sock.timeout, 5.0)  # se restaura
+
+    def test_nobody_in_front_is_no_capture_and_cancels(self):
+        conn = _FaceConn(packets=[])
+        self.assertEqual(enroll_device_face(conn, self.user, timeout=0.2, quiet_seconds=0.05), FACE_NO_CAPTURE)
+        self.assertEqual(conn.cancelled, 2)  # antes de empezar y al rendirse
+
+    def test_capture_without_new_face_is_not_saved(self):
+        conn = _FaceConn(packets=[b"evt"], saves=False)
+        self.assertEqual(enroll_device_face(conn, self.user, timeout=2, quiet_seconds=0.05), FACE_NOT_SAVED)
+
+    def test_reader_rejects_face_enroll(self):
+        conn = _FaceConn(accepts=False)
+        with self.assertRaises(ZkCommandRejectedError):
+            enroll_device_face(conn, self.user, timeout=1, quiet_seconds=0.05)
+
+
 class _FakeBackend:
     def __init__(self, assignments):
         self.assignments = assignments
@@ -146,10 +245,12 @@ class _FakeBackend:
 
 
 class _FakeDevice:
-    def __init__(self, users=(), enroll_result=True, enroll_error=None):
+    def __init__(self, users=(), enroll_result=True, enroll_error=None, face_result="saved"):
         self.users = list(users)
         self.enroll_result = enroll_result
         self.enroll_error = enroll_error
+        self.face_result = face_result
+        self.order = []
         self.created = []
         self.enrolled = []
 
@@ -167,7 +268,14 @@ class _FakeDevice:
         if self.enroll_error is not None:
             raise self.enroll_error
         self.enrolled.append((user.user_id, finger_index))
+        self.order.append("fingerprint")
         return self.enroll_result
+
+    def enroll_face(self, user, timeout):
+        self.order.append("face")
+        if isinstance(self.face_result, Exception):
+            raise self.face_result
+        return self.face_result
 
 
 def _assignment(member_id="m-1", device_user_id="3800"):
@@ -252,13 +360,37 @@ class RemoteEnrollManagerTests(unittest.TestCase):
         self.assertEqual(result["results"]["user"], "existing")
         self.assertEqual(device.created, [])
 
-    def test_face_is_not_supported_on_this_reader(self):
+    def test_fingerprint_then_face(self):
         device = _FakeDevice()
         manager, synced = _manager(device)
+        result = _wait(manager, manager.handle_start(
+            {"member_id": "m-1", "biometrics": ["face", "fingerprint"], "finger_index": 6})["job_id"])
+        self.assertEqual(result["status"], DONE)
+        self.assertEqual(result["results"], {"user": "created", "fingerprint": "saved", "face": "saved"})
+        self.assertEqual(result["message"], "Alta en el lector lista: huella y cara guardadas.")
+        self.assertEqual(device.order, ["fingerprint", "face"])
+        self.assertEqual(synced, ["m-1"])
+
+    def test_face_only(self):
+        device = _FakeDevice()
+        manager, _ = _manager(device)
         result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": ["face"]})["job_id"])
-        self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-103"))
-        self.assertEqual(device.created, [])
-        self.assertEqual(synced, [])
+        self.assertEqual(result["results"], {"user": "created", "face": "saved"})
+        self.assertEqual(device.enrolled, [])
+
+    def test_face_failures_have_codes_and_keep_the_fingerprint(self):
+        for face_result, code in (
+            ("no_capture", "RL-401"),
+            ("not_saved", "RL-402"),
+            (ZkUnavailableError("timeout"), "RL-401"),
+        ):
+            device = _FakeDevice(face_result=face_result)
+            manager, synced = _manager(device)
+            result = _wait(manager, manager.handle_start(
+                {"member_id": "m-1", "biometrics": ["fingerprint", "face"]})["job_id"])
+            self.assertEqual((result["status"], result["error_code"]), (FAILED, code))
+            self.assertEqual(result["results"], {"user": "created", "fingerprint": "saved", "face": "failed"})
+            self.assertEqual(synced, ["m-1"])
 
     def test_refuses_protected_and_admin_users(self):
         manager, _ = _manager(_FakeDevice(), protected={"3800"})
@@ -344,6 +476,24 @@ class EnrollProbeTests(unittest.TestCase):
         self.assertEqual(conn.deleted, [2])
         self.assertEqual([user.user_id for user in conn.users], ["100"])
         self.assertIn("SI acepta", output)
+
+    def test_probe_face_mode(self):
+        conn = _FakeConn()
+        conn.face_packets = [b"\x01\x02"]
+        code, output = self._run(conn, "--modo", "cara", "--face-timeout", "2", "--verbose")
+        self.assertEqual(code, enroll_probe.EXIT_OK)
+        self.assertIn("[CARA] OK", output)
+        self.assertIn("paquete 1: 0102", output)
+        self.assertEqual(conn.enroll_calls, [])
+
+    def test_probe_both_reports_what_was_not_saved(self):
+        conn = _FakeConn()
+        conn.face_packets = []  # el lector nunca pide la cara
+        code, output = self._run(conn, "--modo", "ambas", "--face-timeout", "0.3")
+        self.assertEqual(code, enroll_probe.EXIT_NOT_ENROLLED)
+        self.assertIn("[HUELLA] OK", output)
+        self.assertIn("No se guardo: cara", output)
+        self.assertEqual(conn.deleted, [1])
 
     def test_probe_refuses_existing_test_id(self):
         conn = _FakeConn(users=[_existing(1, "990001")])

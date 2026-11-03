@@ -161,8 +161,10 @@ su huella (flag `zkteco_remote_enroll` del backend). Mismo contrato que el edge 
   `job_id`; `POST EDGE_ENROLL_STATUS_PATH` (`/enroll/status`, `{job_id}`) da el estado:
   `preparing`, `creating_user`, `waiting_finger`, `syncing`, `done` o `failed`.
 - `biometrics = []` solo da de alta al usuario (al inscribir; en planes de pareja, a cada persona
-  una tras otra). `["fingerprint"]` además pone el lector en modo enrolamiento (`CMD_STARTENROLL`):
-  la persona pone el mismo dedo 3 veces. Este lector no registra caras: `"face"` falla con RL-103.
+  una tras otra). `["fingerprint"]` pone el lector en modo enrolamiento (`CMD_STARTENROLL`): la
+  persona pone el mismo dedo 3 veces. `["face"]` usa el mismo comando con el índice 111 (como
+  `StartEnrollEx` del SDK; pyzk no lo trae) y se confirma con el conteo de caras del lector
+  (RL-401 si nadie se puso enfrente, RL-402 si no se guardó). Con ambos, primero huella y luego cara.
 - Si el usuario no existe en el lector, se crea con un UID libre en el grupo bloqueado
   (`ZK_BLOCKED_GROUP_ID`); al final se corre el sync de ese miembro (grupo correcto).
 - Los errores llevan código RL-xxx y detalle (`error_code`, `error_detail`; ver
@@ -177,7 +179,7 @@ al lector):
 
 ```bash
 sc stop GymEdgeZkteco
-.venv\Scripts\python -m edge_service_zkteco.enroll_probe --host 192.168.1.201
+.venv\Scripts\python -m edge_service_zkteco.enroll_probe --host 192.168.1.201 --modo ambas
 sc start GymEdgeZkteco
 ```
 

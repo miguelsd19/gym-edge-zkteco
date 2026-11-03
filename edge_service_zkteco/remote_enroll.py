@@ -5,8 +5,9 @@ el backend inicia un trabajo con `{member_id, biometrics, finger_index}`.
 
 - biometrics = [] solo da de alta al usuario (al inscribir; en planes de
   pareja, a cada persona una tras otra).
-- biometrics = ["fingerprint"]: ademas pone el lector en modo "ponga su dedo".
-  Este lector no registra caras desde el sistema: "face" falla con RL-103.
+- biometrics = ["fingerprint"], ["face"] o ambos: primero la huella y luego la
+  cara. La cara usa StartEnrollEx con el indice 111 (sin soporte en pyzk) y se
+  confirma con el conteo de caras del lector.
 
 El edge pregunta al backend el ID biometrico del miembro, crea al usuario si
 no existe (grupo bloqueado), registra lo pedido y al final sincroniza al
@@ -23,17 +24,17 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from edge_service_zkteco.models import USER_DISABLED_FLAG
-from edge_service_zkteco.zk_client import ZkUnavailableError
+from edge_service_zkteco.zk_client import FACE_NO_CAPTURE, FACE_SAVED, ZkUnavailableError
 
 MAX_FINGER_INDEX = 9
 KEEP_FINISHED_JOBS = 20
-SUPPORTED_BIOMETRICS = ("fingerprint",)
 KNOWN_BIOMETRICS = ("fingerprint", "face")
 
 # Estados que ve el backend.
 PREPARING = "preparing"
 CREATING_USER = "creating_user"
 WAITING_FINGER = "waiting_finger"
+WAITING_FACE = "waiting_face"
 SYNCING = "syncing"
 DONE = "done"
 FAILED = "failed"
@@ -159,10 +160,6 @@ class RemoteEnrollManager:
                 job["finished_at"] = job["finished_at"] or _now_iso()
 
     def _enroll(self, job_id: str, job: dict[str, Any]) -> None:
-        unsupported = [item for item in job["biometrics"] if item not in SUPPORTED_BIOMETRICS]
-        if unsupported:
-            raise EnrollFailure("RL-103", "Este lector solo registra huella desde el sistema.",
-                                f"No soportado: {', '.join(unsupported)}")
         member_id = job["member_id"]
         assignments = self.backend_api.fetch_user_roles(member_ids=[member_id])
         assignment = next((item for item in assignments if item.member_id == member_id), None)
@@ -214,6 +211,30 @@ class RemoteEnrollManager:
             self._set_result(job_id, "fingerprint", "saved")
             self.logger.info("ZK fingerprint enrolled. user_id=%s finger=%s", identifier, job["finger_index"])
 
+        if "face" in job["biometrics"]:
+            self._update(job_id, status=WAITING_FACE,
+                         message="Pide a la persona que se ponga frente al lector para registrar su cara.")
+            try:
+                result = self.device.enroll_face(existing, timeout=self.config.zk_enroll_timeout_seconds)
+            except ZkUnavailableError as exc:
+                self._set_result(job_id, "face", "failed")
+                raise EnrollFailure(
+                    "RL-401", "No se capturo la cara: el lector no respondio durante el registro.", str(exc),
+                ) from exc
+            if result == FACE_NO_CAPTURE:
+                self._set_result(job_id, "face", "failed")
+                raise EnrollFailure(
+                    "RL-401", "No se capturo la cara: nadie se puso frente al lector a tiempo.",
+                )
+            if result != FACE_SAVED:
+                self._set_result(job_id, "face", "failed")
+                raise EnrollFailure(
+                    "RL-402", "El lector no confirmo que guardo la cara (mala captura, o la persona ya "
+                    "tenia una cara registrada y se reemplazo).",
+                )
+            self._set_result(job_id, "face", "saved")
+            self.logger.info("ZK face enrolled. user_id=%s", identifier)
+
     def _sync(self, job_id: str, job: dict[str, Any], show_status: bool) -> None:
         if show_status:
             self._update(job_id, status=SYNCING, message="Aplicando el acceso segun la membresia…")
@@ -226,8 +247,10 @@ class RemoteEnrollManager:
 
     def _done_message(self, job: dict[str, Any]) -> str:
         user = "Alta en el lector lista" if job["created_user"] else "Usuario ya estaba en el lector"
-        if job["results"].get("fingerprint") == "saved":
-            return f"{user}: huella guardada."
+        saved = [label for key, label in (("fingerprint", "huella"), ("face", "cara"))
+                 if job["results"].get(key) == "saved"]
+        if saved:
+            return f"{user}: {' y '.join(saved)} guardada{'s' if len(saved) > 1 else ''}."
         return f"{user}."
 
     # ------------------------------------------------------------ helpers

@@ -1,4 +1,4 @@
-# Prueba del registro remoto de huella (instrucciones para el agente de la PC)
+# Prueba del registro remoto de huella y cara (instrucciones para el agente de la PC)
 
 Este archivo es para el agente de IA que opera la PC del edge en **Norias**. Léelo completo junto
 con `AGENTS.md` antes de ejecutar nada. Las reglas de `AGENTS.md` siguen aplicando.
@@ -20,11 +20,14 @@ backend).
 
 1. Detiene el servicio `GymEdgeZkteco`, porque el lector acepta una sola conexión. Mientras dura
    la prueba (~2 min), las entradas no llegan al sistema, aunque el lector sigue abriendo solo.
-2. Corre `python -m edge_service_zkteco.enroll_probe --host 192.168.1.201 --verbose`, que:
+2. Corre `python -m edge_service_zkteco.enroll_probe --host 192.168.1.201 --modo ambas --verbose`, que:
    - crea el usuario de prueba **990001** ("PRUEBA HUELLA") en el grupo bloqueado 99, así que no
      abre el torniquete;
    - pone el lector en modo "ponga su dedo";
    - revisa si la huella quedó guardada;
+   - después pone el lector en modo **registro de cara** y revisa que el lector tenga una cara más
+     (la cara se pide con el comando del SDK de ZKTeco; con este firmware no está confirmado que
+     funcione, por eso se prueba);
    - **borra al usuario de prueba**. Si el ID 990001 ya existe, se detiene sin tocar nada.
 3. Guarda la salida en `pruebas\registro-huella-AAAAMMDD-HHMM.log`.
 4. **Siempre** vuelve a arrancar `GymEdgeZkteco`, aunque la prueba falle.
@@ -79,6 +82,9 @@ windows\probar_registro_huella.bat
 
 Cuando la consola diga **"Ve al lector AHORA"**, avisa a la persona. Si el lector cambia de
 pantalla y pide la huella, que ponga el **mismo dedo 3 veces** (por defecto, el índice derecho).
+Después la consola dice **"Ponte FRENTE al lector AHORA"**: que la misma persona se ponga de frente
+al lector hasta que termine (hasta ~1 minuto). Para probar solo una cosa:
+`windows\probar_registro_huella.bat 192.168.1.201 huella` o `... cara`.
 
 ### 4. Verificar que todo quedó como antes
 
@@ -100,7 +106,7 @@ powershell -Command "Get-Content dist\runtime\edge_zkteco.log -Tail 30"
 | Código | Significado | Qué reportar |
 |---|---|---|
 | `0` | El lector **sí** acepta el registro remoto. | "Funciona" y la parte de la salida con `[RESULTADO]`. |
-| `2` | El lector no guardó la huella: rechazó el comando, no pidió el dedo o se agotó el tiempo. | Qué se vio en la pantalla del lector y **el log completo** de `pruebas\`. |
+| `2` | El lector no guardó la huella o la cara (la línea `[RESULTADO]` dice cuál): rechazó el comando, no la pidió o se agotó el tiempo. | Qué se vio en la pantalla del lector en cada paso y **el log completo** de `pruebas\` (incluye los paquetes del registro de cara). |
 | `1` | No conectó al lector. | Si el servicio seguía corriendo y el resultado de `Test-NetConnection`. |
 | `3` | El ID 990001 ya existe en el lector; no se tocó nada. | Eso. Se puede repetir con otro ID libre: `.venv\Scripts\python -m edge_service_zkteco.enroll_probe --host 192.168.1.201 --verbose --user-id 990002` (con el servicio detenido). |
 | `4` | Error inesperado. | El log completo. |
