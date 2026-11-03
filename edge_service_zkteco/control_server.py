@@ -109,9 +109,15 @@ class EdgeControlServer:
                         self._send_json(404, {"success": False, "message": "Not found."})
                         return
                 except ValueError as exc:
+                    # Los errores de registro traen su codigo RL (p. ej. RL-012
+                    # lector ocupado) para que el backend no lo deduzca del texto.
                     self._send_json(
                         400,
-                        {"success": False, "message": str(exc) or "Invalid request."},
+                        {
+                            "success": False,
+                            "message": str(exc) or "Invalid request.",
+                            "error_code": getattr(exc, "code", ""),
+                        },
                     )
                     return
                 except Exception as exc:  # noqa: BLE001

@@ -13,7 +13,8 @@ El edge pregunta al backend el ID biometrico del miembro, crea al usuario si
 no existe (grupo bloqueado), registra lo pedido y al final sincroniza al
 miembro para dejarlo en el grupo que le toca. Corre en un hilo y el backend
 consulta el estado. Un registro a la vez. Los errores llevan un codigo RL-xxx
-(docs/CODIGOS_ERROR_LECTOR.md en gym-System).
+(docs/CODIGOS_ERROR_LECTOR.md en gym-System); los de la peticion misma (400)
+tambien lo mandan en `error_code` para que el backend no tenga que adivinarlo.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from edge_service_zkteco.backend_api import BackendUnavailableError
 from edge_service_zkteco.models import USER_DISABLED_FLAG
 from edge_service_zkteco.zk_client import FACE_NO_CAPTURE, FACE_SAVED, ZkUnavailableError
 
@@ -38,6 +40,14 @@ WAITING_FACE = "waiting_face"
 SYNCING = "syncing"
 DONE = "done"
 FAILED = "failed"
+
+
+class EnrollRequestError(ValueError):
+    """Peticion invalida o lector ocupado: el control server responde 400 con el codigo."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class EnrollFailure(Exception):
@@ -78,21 +88,21 @@ class RemoteEnrollManager:
     def handle_start(self, payload: dict[str, Any]) -> dict[str, Any]:
         member_id = str(payload.get("member_id") or "").strip()
         if not member_id:
-            raise ValueError("member_id es obligatorio.")
+            raise EnrollRequestError("RL-004", "member_id es obligatorio.")
         raw = payload.get("biometrics", ["fingerprint"])
         if not isinstance(raw, list) or any(item not in KNOWN_BIOMETRICS for item in raw):
-            raise ValueError("biometrics debe ser una lista con fingerprint y/o face.")
+            raise EnrollRequestError("RL-004", "biometrics debe ser una lista con fingerprint y/o face.")
         biometrics = [item for item in KNOWN_BIOMETRICS if item in raw]
         try:
             finger_index = int(payload.get("finger_index", 6))
         except (TypeError, ValueError) as exc:
-            raise ValueError("finger_index debe ser un numero de 0 a 9.") from exc
+            raise EnrollRequestError("RL-004", "finger_index debe ser un numero de 0 a 9.") from exc
         if not 0 <= finger_index <= MAX_FINGER_INDEX:
-            raise ValueError("finger_index debe ser un numero de 0 a 9.")
+            raise EnrollRequestError("RL-004", "finger_index debe ser un numero de 0 a 9.")
 
         with self._lock:
             if self._active_job_id is not None:
-                raise ValueError("Ya hay un registro en curso en este lector. Espera a que termine.")
+                raise EnrollRequestError("RL-012", "Ya hay un registro en curso en este lector. Espera a que termine.")
             job_id = uuid.uuid4().hex
             self._jobs[job_id] = {
                 "job_id": job_id,
@@ -114,17 +124,27 @@ class RemoteEnrollManager:
             self._active_job_id = job_id
             self._forget_old_jobs()
 
-        threading.Thread(
-            target=self._run, args=(job_id,), daemon=True, name=f"zk-enroll-{job_id[:8]}"
-        ).start()
+        try:
+            threading.Thread(
+                target=self._run, args=(job_id,), daemon=True, name=f"zk-enroll-{job_id[:8]}"
+            ).start()
+        except Exception:
+            # Sin hilo nadie liberaria el lector: quedaria "en curso" para siempre.
+            with self._lock:
+                self._active_job_id = None
+                self._jobs.pop(job_id, None)
+            raise
         return {"success": True, **self._snapshot(job_id)}
 
     def handle_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_id = str(payload.get("job_id") or "").strip()
         with self._lock:
-            if job_id not in self._jobs:
-                raise ValueError("No existe ese registro (el edge pudo reiniciarse).")
-        return {"success": True, **self._snapshot(job_id)}
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise EnrollRequestError("RL-014", "No existe ese registro (el edge pudo reiniciarse).")
+            snapshot = dict(job)
+            snapshot["results"] = dict(job["results"])
+        return {"success": True, **snapshot}
 
     # ------------------------------------------------------------- worker
 
@@ -153,6 +173,11 @@ class RemoteEnrollManager:
                                     job_id, failure.code, failure.message, failure.detail)
                 self._update(job_id, status=FAILED, message=failure.message,
                              error_code=failure.code, error_detail=failure.detail)
+        except Exception as exc:  # noqa: BLE001
+            # El trabajo nunca debe quedar a medias: el backend consultaria sin fin.
+            self.logger.exception("ZK remote enroll could not finish. job=%s", job_id)
+            self._update(job_id, status=FAILED, message="Error inesperado del servicio del lector.",
+                         error_code="RL-901", error_detail=f"{type(exc).__name__}: {exc}")
         finally:
             with self._lock:
                 if self._active_job_id == job_id:
@@ -161,7 +186,10 @@ class RemoteEnrollManager:
 
     def _enroll(self, job_id: str, job: dict[str, Any]) -> None:
         member_id = job["member_id"]
-        assignments = self.backend_api.fetch_user_roles(member_ids=[member_id])
+        try:
+            assignments = self.backend_api.fetch_user_roles(member_ids=[member_id])
+        except BackendUnavailableError as exc:
+            raise EnrollFailure("RL-104", "El servicio del lector no pudo consultar al sistema.", str(exc)) from exc
         assignment = next((item for item in assignments if item.member_id == member_id), None)
         identifier = (self.identifier_for(assignment) or "").strip() if assignment else ""
         if not identifier:
@@ -258,11 +286,18 @@ class RemoteEnrollManager:
         if show_status:
             self._update(job_id, status=SYNCING, message="Aplicando el acceso segun la membresia…")
         try:
-            self.sync_member(job["member_id"])
+            counters = self.sync_member(job["member_id"])
         except Exception as exc:  # noqa: BLE001
             # Lo registrado si quedo; el sync programado ajusta el grupo despues.
             self.logger.warning("ZK sync after enroll failed. member=%s error=%s", job["member_id"], exc)
             self._update(job_id, warning_code="RL-501", warning_detail=str(exc))
+            return
+        # Sin excepcion tambien puede no haberse aplicado (sync apagado, o el
+        # usuario recien creado no aparecio): quedaria bloqueado sin aviso.
+        if isinstance(counters, dict) and counters.get("updated", 0) + counters.get("unchanged", 0) == 0:
+            self.logger.warning("ZK sync after enroll did not apply. member=%s counters=%s",
+                                job["member_id"], counters)
+            self._update(job_id, warning_code="RL-501", warning_detail=f"No se aplico el acceso: {counters}")
 
     def _done_message(self, job: dict[str, Any]) -> str:
         user = "Alta en el lector lista" if job["created_user"] else "Usuario ya estaba en el lector"
