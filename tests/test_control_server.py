@@ -166,3 +166,10 @@ class EnrollRouteErrorTests(unittest.TestCase):
 
         status, body = self._error(self._server(boom))
         self.assertEqual((status, body["error_code"]), (500, "RL-901"))
+
+    def test_value_error_without_code_on_enroll_is_500_rl901(self):
+        def bug(payload):
+            raise ValueError("invalid literal for int()")
+
+        status, body = self._error(self._server(bug))
+        self.assertEqual((status, body["error_code"]), (500, "RL-901"))

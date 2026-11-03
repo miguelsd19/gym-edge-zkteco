@@ -109,6 +109,19 @@ class EdgeControlServer:
                         self._send_json(404, {"success": False, "message": "Not found."})
                         return
                 except ValueError as exc:
+                    if self.path in outer.extra_routes and not getattr(exc, "code", ""):
+                        # Un ValueError sin codigo en el registro es un bug, no un
+                        # error de la peticion: que no llegue como RL-004.
+                        outer.logger.exception("Edge enroll route failed: %s", exc)
+                        self._send_json(
+                            500,
+                            {
+                                "success": False,
+                                "message": f"Error inesperado del servicio del lector: {exc}",
+                                "error_code": "RL-901",
+                            },
+                        )
+                        return
                     # Los errores de registro traen su codigo RL (p. ej. RL-012
                     # lector ocupado) para que el backend no lo deduzca del texto.
                     self._send_json(
