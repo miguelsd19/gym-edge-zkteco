@@ -38,6 +38,28 @@ class _FakeSock:
     def settimeout(self, value):
         self.timeout = value
 
+    def sendall(self, data):
+        command = unpack('<H', data[8:10])[0]
+        if command == 61:
+            identifier, finger, _ = unpack('<24sbb', data[16:])
+            user_id = identifier.split(b'\0')[0].decode()
+            user = next(u for u in self.conn.users if u.user_id == user_id)
+            if finger != 111:
+                self.conn.enroll_calls.append((user.uid, finger, user_id))
+                if self.conn.enroll_result and self.conn.store_template:
+                    self.conn.templates[(user.uid, finger)] = b'tpl'
+        ack = pack('<4H', 2000, 0, 1, 1)
+        self.packets.append(pack('<HHI', 0x5050, 0x7d82, len(ack)) + ack)
+        if command == 61 and finger == 111:
+            # Cara: los eventos que mande el lector, sin evento final.
+            for payload in self.conn.face_packets:
+                event = pack('<4H', 500, 0, 1, 1) + payload
+                self.packets.append(pack('<HHI', 0x5050, 0x7d82, len(event)) + event)
+        elif command == 61:
+            # Evento final del registro (resultado, tamano, user_id), como el lector.
+            final = pack('<4H', 500, 0, 1, 1) + pack('<HH', 0, 3) + user_id.encode().ljust(15, b'\0')
+            self.packets.append(pack('<HHI', 0x5050, 0x7d82, len(final)) + final)
+
 
 class _FakeConn:
     """Lector SpeedFace (registro de 72 bytes) en memoria."""
@@ -54,11 +76,20 @@ class _FakeConn:
         self.enroll_calls = []
         self.deleted = []
         self._ZK__sock = _FakeSock()
+        self._ZK__sock.conn = self
+        self._ZK__session_id = 1
+        self._ZK__reply_id = 0
         self._ZK__data = b""
         self.disconnected = False
         self.faces = 29
         self.face_packets = []
         self.face_saves = True
+
+    def _ZK__create_header(self, command, payload, session, reply):
+        return pack('<4H', command, 0, session, reply + 1) + payload
+
+    def _ZK__create_tcp_top(self, data):
+        return pack('<HHI', 0x5050, 0x7d82, len(data)) + data
 
     # registro de cara
     def read_sizes(self):
@@ -91,9 +122,6 @@ class _FakeConn:
         if command == 22:
             uid, group = unpack("<II", payload)
             self.groups[uid] = group
-            return {"status": True}
-        if command == 61:
-            self._ZK__sock.packets = list(self.face_packets)
             return {"status": True}
         if command == 21:
             uid = unpack("<I", payload)[0]
@@ -153,7 +181,7 @@ class DeviceHelpersTests(unittest.TestCase):
         self.assertEqual(conn.groups, {})
 
     def test_enroll_restores_socket_timeout_and_checks_template(self):
-        conn = _FakeConn()
+        conn = _FakeConn(users=[_existing(3, '3800')])
         user = ZkUserInfo(uid=3, user_id="3800", name="Ana", privilege=0, password="", group_id="99", card=0)
 
         self.assertTrue(enroll_device_fingerprint(conn, user, 6))
@@ -161,79 +189,10 @@ class DeviceHelpersTests(unittest.TestCase):
         self.assertEqual(conn._ZK__sock.timeout, 5.0)
 
     def test_enroll_without_saved_template_is_not_success(self):
-        conn = _FakeConn(store_template=False)
+        conn = _FakeConn(users=[_existing(3, '3800')], store_template=False)
         user = ZkUserInfo(uid=3, user_id="3800", name="Ana", privilege=0, password="", group_id="99", card=0)
 
         self.assertFalse(enroll_device_fingerprint(conn, user, 6))
-
-
-class _FaceSock(_FakeSock):
-    def __init__(self, packets):
-        super().__init__()
-        self.packets = list(packets)
-
-    def recv(self, size):
-        if self.packets:
-            return self.packets.pop(0)
-        raise socket.timeout()
-
-
-class _FaceConn:
-    tcp = True
-
-    def __init__(self, packets=(), saves=True, accepts=True):
-        self._ZK__sock = _FaceSock(packets)
-        self.faces = 29
-        self.saves = saves
-        self.accepts = accepts
-        self.sent = []
-        self.cancelled = 0
-        self.acks = 0
-
-    def read_sizes(self):
-        return True
-
-    def cancel_capture(self):
-        self.cancelled += 1
-
-    def _ZK__send_command(self, command, payload=b"", size=8):
-        self.sent.append((command, payload))
-        return {"status": self.accepts}
-
-    def _ZK__ack_ok(self):
-        self.acks += 1
-
-    def refresh_data(self):
-        if self.saves and self.acks:
-            self.faces += 1
-
-
-class FaceEnrollTests(unittest.TestCase):
-    user = ZkUserInfo(uid=3, user_id="3800", name="Ana", privilege=0, password="", group_id="99", card=0)
-
-    def test_face_saved_when_count_goes_up(self):
-        conn = _FaceConn(packets=[b"evt1", b"evt2"])
-        result = enroll_device_face(conn, self.user, timeout=2, quiet_seconds=0.05)
-        self.assertEqual(result, FACE_SAVED)
-        command, payload = conn.sent[0]
-        self.assertEqual(command, 61)
-        self.assertEqual(payload[:4], b"3800")
-        self.assertEqual(payload[24], 111)
-        self.assertEqual(conn._ZK__sock.timeout, 5.0)  # se restaura
-
-    def test_nobody_in_front_is_no_capture_and_cancels(self):
-        conn = _FaceConn(packets=[])
-        self.assertEqual(enroll_device_face(conn, self.user, timeout=0.2, quiet_seconds=0.05), FACE_NO_CAPTURE)
-        self.assertEqual(conn.cancelled, 2)  # antes de empezar y al rendirse
-
-    def test_capture_without_new_face_is_not_saved(self):
-        conn = _FaceConn(packets=[b"evt"], saves=False)
-        self.assertEqual(enroll_device_face(conn, self.user, timeout=2, quiet_seconds=0.05), FACE_NOT_SAVED)
-
-    def test_reader_rejects_face_enroll(self):
-        conn = _FaceConn(accepts=False)
-        with self.assertRaises(ZkCommandRejectedError):
-            enroll_device_face(conn, self.user, timeout=1, quiet_seconds=0.05)
 
 
 class _FakeBackend:
@@ -504,7 +463,7 @@ class EnrollProbeTests(unittest.TestCase):
         code, output = self._run(conn, "--modo", "cara", "--face-timeout", "2", "--verbose")
         self.assertEqual(code, enroll_probe.EXIT_OK)
         self.assertIn("[CARA] OK", output)
-        self.assertIn("paquete 1: 0102", output)
+        self.assertRegex(output, r"paquete 1: f401[0-9a-f]{12}0102\n")
         self.assertEqual(conn.enroll_calls, [])
 
     def test_probe_both_reports_what_was_not_saved(self):
@@ -539,6 +498,14 @@ class EnrollProbeTests(unittest.TestCase):
         code, _ = self._run(conn, "--keep")
         self.assertEqual(code, enroll_probe.EXIT_OK)
         self.assertEqual(conn.deleted, [])
+
+    def test_probe_does_not_claim_deletion_if_user_remains(self):
+        conn = _FakeConn()
+        conn.delete_user = lambda uid: None
+        code, output = self._run(conn)
+        self.assertEqual(code, enroll_probe.EXIT_ERROR)
+        self.assertIn('[AVISO] No se pudo borrar', output)
+        self.assertNotIn('990001 borrado del lector', output)
 
 
 if __name__ == "__main__":

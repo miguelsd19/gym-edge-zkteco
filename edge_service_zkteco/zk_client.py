@@ -13,6 +13,14 @@ from edge_service_zkteco.config import EdgeConfig
 from edge_service_zkteco.event_parser import event_to_dict
 from edge_service_zkteco.models import USER_DISABLED_FLAG, ZkUserInfo
 from edge_service_zkteco.zk_capture import capture_window
+from edge_service_zkteco.zk_enroll import (  # noqa: F401 (se reexportan)
+    FACE_ENROLL_INDEX,
+    FACE_NO_CAPTURE,
+    FACE_NOT_SAVED,
+    FACE_SAVED,
+    enroll_face,
+    enroll_fingerprint,
+)
 
 
 class ZkUnavailableError(Exception):
@@ -122,95 +130,23 @@ def create_device_user(conn: Any, user_id: str, name: str, group_id: str) -> tup
     return user, True
 
 
-def enroll_device_fingerprint(conn: Any, user: ZkUserInfo, finger_index: int) -> bool:
+def enroll_device_fingerprint(conn: Any, user: ZkUserInfo, finger_index: int, timeout: float = 60) -> bool:
     """Pone el lector en modo enrolamiento: la persona pone el dedo 3 veces.
 
-    Usa CMD_STARTENROLL de pyzk (el mismo comando que StartEnrollEx del SDK de
-    ZKTeco). Devuelve True solo si despues se puede leer la huella guardada.
+    Usa CMD_STARTENROLL y consume tramas completas del socket de pyzk.
+    Devuelve True solo si se puede leer una plantilla nueva o modificada.
     """
-    sock = conn._ZK__sock
-    old_timeout = sock.gettimeout()
-    try:
-        accepted = conn.enroll_user(uid=user.uid, temp_id=finger_index, user_id=user.user_id)
-    finally:
-        # pyzk deja el socket con su propio timeout; se restaura para la captura.
-        sock.settimeout(old_timeout)
-    if not accepted:
-        return False
-    conn.refresh_data()
-    return bool(conn.get_user_template(uid=user.uid, temp_id=finger_index))
-
-
-# Indice de "dedo" que el SDK de ZKTeco (StartEnrollEx) usa para pedir la cara.
-FACE_ENROLL_INDEX = 111
-CMD_STARTENROLL = 61
-# Resultados de enroll_device_face.
-FACE_SAVED = "saved"
-FACE_NO_CAPTURE = "no_capture"
-FACE_NOT_SAVED = "not_saved"
-
-
-def _face_count(conn: Any) -> int:
-    conn.read_sizes()
-    return int(getattr(conn, "faces", 0) or 0)
+    return enroll_fingerprint(conn, user, finger_index, timeout)
 
 
 def enroll_device_face(conn: Any, user: ZkUserInfo, timeout: float, *, quiet_seconds: float = 8.0,
                        on_packet: Callable[[bytes], None] | None = None) -> str:
-    """Pone el lector en modo "registro de cara" para el usuario y verifica que quedo.
+    """Pone el lector en modo "registro de cara" (StartEnrollEx, indice 111).
 
-    pyzk no trae registro de cara: se manda CMD_STARTENROLL con el indice 111,
-    como StartEnrollEx del SDK de ZKTeco. El lector avisa con eventos mientras
-    la persona se pone enfrente; se espera hasta que deja de mandarlos
-    (`quiet_seconds`) o hasta `timeout`. El resultado se confirma con el
-    conteo de caras del lector (sube si la guardo). Si el usuario ya tenia cara
-    el lector la reemplaza y el conteo no sube: se reporta como no confirmada.
-
-    Devuelve FACE_SAVED, FACE_NO_CAPTURE (el lector no mando ningun evento: nadie
-    se puso enfrente) o FACE_NOT_SAVED (hubo captura pero el conteo no subio).
+    Ver zk_enroll.enroll_face: sale con el evento final del lector y confirma
+    con su resultado o con el conteo de caras.
     """
-    before = _face_count(conn)
-    sock = conn._ZK__sock
-    old_timeout = sock.gettimeout()
-    events = 0
-    try:
-        conn.cancel_capture()
-        if conn.tcp:
-            payload = pack("<24sbb", str(user.user_id).encode(), FACE_ENROLL_INDEX, 1)
-        else:
-            payload = pack("<Ib", int(user.user_id), FACE_ENROLL_INDEX)
-        response = conn._ZK__send_command(CMD_STARTENROLL, payload)
-        if not response.get("status"):
-            raise ZkCommandRejectedError("El lector no acepto el registro de cara.")
-        deadline = time.monotonic() + timeout
-        last_event = None
-        sock.settimeout(1.0)
-        while time.monotonic() < deadline:
-            if last_event is not None and time.monotonic() - last_event >= quiet_seconds:
-                break
-            try:
-                data = sock.recv(1032)
-            except socket.timeout:
-                continue
-            if not data:
-                raise ConnectionError("El lector cerro la conexion durante el registro de cara.")
-            conn._ZK__ack_ok()
-            events += 1
-            last_event = time.monotonic()
-            if on_packet is not None:
-                on_packet(data)
-    finally:
-        sock.settimeout(old_timeout)
-        if events == 0:
-            # Nadie se puso enfrente: se saca al lector del modo registro.
-            try:
-                conn.cancel_capture()
-            except Exception:  # noqa: BLE001
-                pass
-    if events == 0:
-        return FACE_NO_CAPTURE
-    conn.refresh_data()
-    return FACE_SAVED if _face_count(conn) > before else FACE_NOT_SAVED
+    return enroll_face(conn, user, timeout, quiet_seconds=quiet_seconds, on_packet=on_packet)
 
 
 class _PendingCommand:
@@ -434,8 +370,8 @@ class ZkClient:
         # rato no se capturan entradas en vivo (el lector sigue decidiendo solo).
         return self._submit(
             "enroll_fingerprint",
-            lambda conn: enroll_device_fingerprint(conn, user, finger_index),
-            timeout=timeout,
+            lambda conn: enroll_device_fingerprint(conn, user, finger_index, timeout),
+            timeout=timeout + 30,
         )
 
     def enroll_face(self, user: ZkUserInfo, timeout: float) -> str:

@@ -148,8 +148,11 @@ def run_probe(args: argparse.Namespace, zk_factory: Callable[..., Any] | None = 
             try:
                 conn.delete_user(uid=created_user.uid)
                 conn.refresh_data()
+                if any(str(item.user_id).strip() == user_id for item in conn.get_users()):
+                    raise RuntimeError("El usuario sigue presente al verificar el borrado")
                 _log(f"Usuario de prueba {user_id} borrado del lector.")
             except Exception as exc:  # noqa: BLE001
+                result = EXIT_ERROR
                 _log(
                     f"[AVISO] No se pudo borrar el usuario de prueba {user_id} (uid {created_user.uid}): "
                     f"{exc}. Borralo a mano en el lector: Menu > Usuarios > {user_id}."
