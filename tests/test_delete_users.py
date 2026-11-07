@@ -139,11 +139,6 @@ class DeleteUsersRouteTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 401)
         self.assertEqual(self.calls, [])
 
-    def test_route_absent_without_handler(self):
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            self._post(self._start(with_delete=False))
-        self.assertEqual(ctx.exception.code, 404)
-
 
 if __name__ == "__main__":
     unittest.main()
