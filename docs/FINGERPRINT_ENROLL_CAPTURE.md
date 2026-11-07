@@ -81,3 +81,24 @@ WinError 10053. The control server answered 404/401 without reading the
 request body; closing a socket with unread data makes Windows send RST, so the
 client lost the response. The server now reads the body before any response
 and the removed test is back.
+
+## Finger already registered
+
+After a successful fingerprint registration, repeated attempts for the same
+user/finger in Norias returned CMD_ACK_ERROR (2001) when starting enrollment.
+The operator reproduced the behavior on two users. This observation does not
+mean every 2001 response is a duplicate-finger error.
+
+Before issuing any enrollment command, the edge now reads the requested
+user/finger template. If it exists, enrollment stops with a specific message:
+"Este dedo ya tiene una huella registrada" and error code RL-302. The template
+is preserved; the edge does not delete it or begin replacement. The caller
+can select a different free finger. The typed error survives the command
+queue without reconnecting the reader and releases the enrollment job lock;
+the member access sync is still performed. Other read failures or command
+rejections are not labeled as an existing fingerprint without that readback.
+
+Tests cover an existing template without any capture command, a free finger,
+the queued error without reconnect, and the final job message/status/unlock.
+These changes have not been deployed as part of creating this PR. No reader
+users, biometrics, backend code or backend flags are changed by the PR task.

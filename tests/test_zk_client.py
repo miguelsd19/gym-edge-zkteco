@@ -172,6 +172,20 @@ class _SilentLogger:
 
 
 class ZkClientTests(unittest.TestCase):
+    def test_existing_finger_error_survives_queue_without_reconnect(self):
+        from edge_service_zkteco.zk_enroll import FingerprintAlreadyExistsError
+        conn = FakeConn()
+        factory = FakeZkFactory([conn])
+        client = self._start_client(factory)
+
+        def already_present(conn):
+            raise FingerprintAlreadyExistsError('Este dedo ya tiene una huella registrada.')
+
+        with self.assertRaises(FingerprintAlreadyExistsError):
+            client._submit('enroll_fingerprint', already_present)
+        self.assertEqual(client._submit('next-command', lambda c: 'ok'), 'ok')
+        self.assertEqual(factory.connect_attempts, 1)
+
     def test_command_batch_and_listen_window_prevent_capture_starvation(self):
         from edge_service_zkteco.zk_client import _PendingCommand
         from tests.test_zk_capture import frame, attendance

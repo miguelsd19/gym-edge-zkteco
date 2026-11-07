@@ -42,6 +42,10 @@ FACE_NOT_SAVED = "not_saved"
 _ATTENDANCE_SIZES = (12, 32, 36, 52)
 
 
+class FingerprintAlreadyExistsError(ValueError):
+    """The requested finger has a saved template; do not replace it."""
+
+
 class _EnrollmentStream:
     def __init__(self, conn: Any):
         self.conn = conn
@@ -168,6 +172,11 @@ def _capture(conn: Any, user: Any, index: int, timeout: float, *, quiet_seconds:
 def enroll_fingerprint(conn: Any, user: Any, finger_index: int, timeout: float = 60) -> bool:
     """Exito solo si se lee una plantilla nueva o distinta de la que habia."""
     before = _template_data(conn.get_user_template(uid=user.uid, temp_id=finger_index))
+    if before:
+        raise FingerprintAlreadyExistsError(
+            f"Este dedo ya tiene una huella registrada (dedo {finger_index}). "
+            "Selecciona otro dedo libre; la huella existente se conserva."
+        )
     _capture(conn, user, finger_index, timeout)
     conn.refresh_data()
     after = _template_data(conn.get_user_template(uid=user.uid, temp_id=finger_index))

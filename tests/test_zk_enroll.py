@@ -8,6 +8,7 @@ from edge_service_zkteco.zk_enroll import (
     FACE_NO_CAPTURE,
     FACE_NOT_SAVED,
     FACE_SAVED,
+    FingerprintAlreadyExistsError,
     enroll_face,
     enroll_fingerprint,
     enrollment_result,
@@ -142,11 +143,28 @@ class FingerprintTests(EnrollTestCase):
         ok, _ = self.run_with_clock(Conn(saves=False), enroll_fingerprint, 6)
         self.assertFalse(ok)
 
-    def test_existing_unchanged_template_is_not_success(self):
+    def test_existing_template_prevents_enroll_without_touching_socket(self):
         conn = Conn(saves=False)
         conn.template = b'previous-template'
-        ok, _ = self.run_with_clock(conn, enroll_fingerprint, 6)
-        self.assertFalse(ok)
+        with self.assertRaisesRegex(FingerprintAlreadyExistsError, 'ya tiene una huella'):
+            self.run_with_clock(conn, enroll_fingerprint, 6)
+        self.assertEqual(conn.commands, [])
+        self.assertEqual(conn.template, b'previous-template')
+        self.assertEqual(conn._ZK__sock.timeout, 5)
+
+    def test_another_free_finger_can_be_registered(self):
+        conn = Conn()
+        reads = []
+
+        def template(uid, temp_id):
+            reads.append((uid, temp_id))
+            return None if len(reads) == 1 else b'new-template'
+
+        conn.get_user_template = template
+        ok, _ = self.run_with_clock(conn, enroll_fingerprint, 7)
+        self.assertTrue(ok)
+        self.assertEqual(reads, [(USER.uid, 7), (USER.uid, 7)])
+        self.assertIn(61, conn.commands)
 
     def test_partial_frame_does_not_report_success_and_restores_timeout(self):
         conn = Conn(events=[b'\x2b'])

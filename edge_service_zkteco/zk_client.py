@@ -18,6 +18,7 @@ from edge_service_zkteco.zk_enroll import (  # noqa: F401 (se reexportan)
     FACE_NO_CAPTURE,
     FACE_NOT_SAVED,
     FACE_SAVED,
+    FingerprintAlreadyExistsError,
     enroll_face,
     enroll_fingerprint,
 )
@@ -540,6 +541,11 @@ class ZkClient:
             try:
                 command.result = command.func(conn)
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, FingerprintAlreadyExistsError):
+                    command.error = exc
+                    self._mark_success()
+                    command.done.set()
+                    continue
                 if _is_network_error(exc):
                     command.error = ZkUnavailableError(
                         f"Network error while running ZK command '{command.name}': {exc}"
