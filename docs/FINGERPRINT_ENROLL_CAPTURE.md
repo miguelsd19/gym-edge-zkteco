@@ -48,16 +48,36 @@ The service still runs the prior executable with remote enrollment disabled;
 this source change has not been deployed or enabled. Face enrollment remains
 outside this validation. No backend flags or code were changed.
 
-## Deferred deletion-route test
+## Early finish and face enrollment (follow-up)
 
-At the owner's request, remove only
-`DeleteUsersRouteTests.test_route_absent_without_handler`. On this Windows PC
-it intermittently raised ConnectionAbortedError / WinError 10053 before the
-expected HTTP 404 could be read. Other runs passed. The cause has not been
-established, and removal does not demonstrate that the route is correct.
-This leaves the absent-handler/404 scenario without that integration test.
-Deletion is outside the current fingerprint-enrollment rollout priority;
-investigate and restore this coverage before taking up deletion work.
-The deletion implementation and its other tests (including authentication
-and protected-user behavior) remain in place. Removing this test does not
-enable, disable or authorize deletion of members.
+In Norias the reader saved the fingerprint and, separately, a face, but the app
+kept waiting: the edge only stopped at the capture deadline
+(`ZK_ENROLL_TIMEOUT_SECONDS`, 240 s) plus 30 s, and live access events were
+not captured meanwhile. The face request ended with RL-401 after 4.5 minutes
+without checking whether the face was saved.
+
+`edge_service_zkteco/zk_enroll.py` now handles both:
+
+- The capture ends at the final enrollment event. Observed layout: result (H),
+  size (H), user_id (`0000 4e03 "990001"...`). Result 0 = saved.
+- Attendance events (user_id at the start, or pyzk attendance sizes) that
+  arrive while the person stays in front of the reader do not count as
+  enrollment progress.
+- Face uses the same complete-frame reading and cleanup as the fingerprint.
+  It is saved when the final event has result 0 (this also covers replacing an
+  existing face, where the face count does not grow) or when the face count
+  grows. Without a final event it stops after 8 s without progress events.
+- Fingerprint success still requires reading a new or different template.
+
+The face final event has not been observed yet: verify with
+`windows\probar_registro_huella.bat 192.168.1.201 cara` and keep the packets
+printed with `--verbose`.
+
+## Deletion-route test restored
+
+`DeleteUsersRouteTests.test_route_absent_without_handler` and
+`test_unknown_path_returns_404` failed intermittently on Windows with
+WinError 10053. The control server answered 404/401 without reading the
+request body; closing a socket with unread data makes Windows send RST, so the
+client lost the response. The server now reads the body before any response
+and the removed test is back.

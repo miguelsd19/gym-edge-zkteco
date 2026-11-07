@@ -78,6 +78,12 @@ class EdgeControlServer:
             server_version = "EdgeControlServer/1.0"
 
             def do_POST(self) -> None:  # noqa: N802
+                # El cuerpo se lee siempre antes de contestar: si se responde
+                # 404/401 con datos sin leer, Windows corta la conexion con RST
+                # y el cliente ve WinError 10053 en vez de la respuesta.
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                raw_body = self.rfile.read(length) if length > 0 else b"{}"
+
                 if self.path not in outer.known_paths:
                     self._send_json(404, {"success": False, "message": "Not found."})
                     return
@@ -86,8 +92,6 @@ class EdgeControlServer:
                     self._send_json(401, {"success": False, "message": "Unauthorized."})
                     return
 
-                length = int(self.headers.get("Content-Length", "0") or "0")
-                raw_body = self.rfile.read(length) if length > 0 else b"{}"
                 try:
                     payload = json.loads(raw_body.decode("utf-8") or "{}")
                     if not isinstance(payload, dict):
