@@ -11,7 +11,7 @@ De eso depende el botón "Registrar huella" de la app. El código ya está en `m
 (`ZK_REMOTE_ENROLL_ENABLED=false` en el edge y flag `zkteco_remote_enroll` apagado en el
 backend).
 
-**Esta tarea es solo la prueba.** No enciendas `ZK_REMOTE_ENROLL_ENABLED`, no reconstruyas el
+**Esta tarea es solo la prueba y el inventario de huellas (paso 5).** No enciendas `ZK_REMOTE_ENROLL_ENABLED`, no reconstruyas el
 `.exe` y no cambies el `.env`. Al final reporta el resultado.
 
 ## Qué hace la prueba
@@ -101,6 +101,31 @@ powershell -Command "Get-Content dist\runtime\edge_zkteco.log -Tail 30"
 - Pide a alguien que pase por el lector y confirma que en el log aparecen `Candidate ZK event
   received` y `Access result: granted=...` de esa marca.
 
+## 5. Inventario de huellas (después de la prueba)
+
+Sirve para que la app sepa qué miembros **ya tienen huella** en el lector (los registrados antes
+del registro remoto). Es de **solo lectura**: no escribe nada en el lector y el archivo no lleva
+plantillas ni nombres, solo `user_id` y cuántas huellas tiene cada uno. Las caras no se pueden leer
+por usuario; solo sale el total.
+
+También detiene el servicio (~1-2 min), así que pide confirmación igual que en el paso 2:
+
+> "Voy a detener otra vez el servicio del lector 1 o 2 minutos para leer qué socios ya tienen
+> huella. No cambia nada en el lector. ¿Lo hago?"
+
+```bat
+windows\inventario_huellas.bat
+```
+
+- `RESULTADO 0`: se guardó `pruebas\huellas-AAAAMMDD-HHMM.json`. Revisa con
+  `sc query GymEdgeZkteco` que el servicio quedó `RUNNING`.
+- `RESULTADO 1` o `2`: repítelo una vez; si sigue, repórtalo con la salida.
+
+**No subas el archivo a ningún lado ni lo cargues al sistema.** Entrégaselo a la persona (por
+ejemplo, cópialo a una USB o pásale su contenido) y reporta la línea
+`Usuarios: N | con huella: N | sin huella: N`. La carga a Gym System la hace el dueño después de
+revisar la lista.
+
 ## Cómo interpretar el resultado
 
 | Código | Significado | Qué reportar |
@@ -122,7 +147,8 @@ Si el código es `2`, también es útil saber si el lector **mostró la pantalla
 2. Qué se vio en la pantalla del lector.
 3. Que el servicio quedó `RUNNING` y que entra la marca de prueba.
 4. Que el usuario 990001 se borró.
-5. El archivo de `pruebas\` si el resultado no fue `0`. Lleva la salida del protocolo, pero no
+5. El resumen del inventario de huellas y dónde quedó el archivo `pruebas\huellas-*.json`.
+6. El archivo de `pruebas\` si el resultado no fue `0`. Lleva la salida del protocolo, pero no
    datos de socios.
 
 Si salió `0`, el siguiente paso **no lo hace este agente sin instrucción del dueño**: reconstruir el
