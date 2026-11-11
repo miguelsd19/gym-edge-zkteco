@@ -252,6 +252,7 @@ def _manager(device, assignments=None, protected=()):
         logger=logger,
         config=SimpleNamespace(
             zk_protected_user_ids=frozenset(protected),
+            zk_allowed_group_id="1",
             zk_blocked_group_id="99",
             zk_enroll_timeout_seconds=60,
         ),
@@ -285,9 +286,44 @@ class RemoteEnrollManagerTests(unittest.TestCase):
         self.assertTrue(result["created_user"])
         self.assertEqual(result["results"], {"user": "created", "fingerprint": "saved"})
         self.assertEqual(result["error_code"], "")
-        self.assertEqual(device.created, [("3800", "Ana Lopez", "99")])
+        self.assertEqual(device.created, [("3800", "Ana Lopez", "1")])
         self.assertEqual(device.enrolled, [("3800", 6)])
         self.assertEqual(synced, ["m-1"])
+
+    def test_new_user_with_active_membership_is_created_with_access(self):
+        device = _FakeDevice(enroll_result=False)
+        manager, synced = _manager(device)
+
+        result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": ["fingerprint"]})["job_id"])
+
+        # Aunque la huella falle, ya nacio en el grupo con acceso.
+        self.assertEqual(result["status"], FAILED)
+        self.assertEqual(device.created, [("3800", "Ana Lopez", "1")])
+        self.assertEqual(synced, ["m-1"])
+
+    def test_new_user_without_active_membership_is_created_blocked(self):
+        expired = UserRoleAssignment(
+            member_id="m-1", member_name="Ana Lopez", rfid_code="3800",
+            device_user_id="3800", target_user_type="blackList", reason="expired",
+        )
+        device = _FakeDevice()
+        manager, _ = _manager(device, assignments=[expired])
+
+        _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": ["fingerprint"]})["job_id"])
+
+        self.assertEqual(device.created, [("3800", "Ana Lopez", "99")])
+
+    def test_new_user_with_unknown_role_is_created_blocked(self):
+        unknown = UserRoleAssignment(
+            member_id="m-1", member_name="Ana Lopez", rfid_code="3800",
+            device_user_id="3800", target_user_type="", reason="",
+        )
+        device = _FakeDevice()
+        manager, _ = _manager(device, assignments=[unknown])
+
+        _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": []})["job_id"])
+
+        self.assertEqual(device.created, [("3800", "Ana Lopez", "99")])
 
     def test_registration_only_creates_user_without_fingerprint(self):
         device = _FakeDevice()
