@@ -168,8 +168,8 @@ class RemoteEnrollManager:
             failure = EnrollFailure("RL-901", "Error inesperado del servicio del lector.",
                                     f"{type(exc).__name__}: {exc}")
         try:
-            # Con el usuario en el lector (aunque falle la huella) se aplica su
-            # acceso segun la membresia: lo nuevo nace bloqueado.
+            # Con el usuario en el lector (aunque falle la huella) se confirma su
+            # acceso segun la membresia (grupo y bit de deshabilitado).
             if job["results"].get("user") in ("created", "existing"):
                 self._sync(job_id, job, show_status=failure is None)
             if failure is None:
@@ -211,9 +211,17 @@ class RemoteEnrollManager:
         if existing is not None and existing.privilege & ~USER_DISABLED_FLAG:
             raise EnrollFailure("RL-201", f"El ID {identifier} es administrador del lector.")
         if existing is None:
+            # Con membresia vigente nace ya con acceso: si la huella tarda o falla,
+            # la persona no se queda bloqueada esperando el sync del final. Sin
+            # membresia (o tipo desconocido) nace bloqueado, como antes.
+            group_id = (
+                self.config.zk_allowed_group_id
+                if (assignment.target_user_type or "").strip() == "normal"
+                else self.config.zk_blocked_group_id
+            )
             try:
                 existing, created = self.device.create_user(
-                    identifier, assignment.member_name or identifier, self.config.zk_blocked_group_id
+                    identifier, assignment.member_name or identifier, group_id
                 )
             except ZkUnavailableError as exc:
                 raise EnrollFailure("RL-202", "El lector no acepto dar de alta al usuario.", str(exc)) from exc

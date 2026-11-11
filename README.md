@@ -165,8 +165,9 @@ su huella (flag `zkteco_remote_enroll` del backend). Mismo contrato que el edge 
   persona pone el mismo dedo 3 veces. `["face"]` usa el mismo comando con el índice 111 (como
   `StartEnrollEx` del SDK; pyzk no lo trae) y se confirma con el conteo de caras del lector
   (RL-401 si nadie se puso enfrente, RL-402 si no se guardó). Con ambos, primero huella y luego cara.
-- Si el usuario no existe en el lector, se crea con un UID libre en el grupo bloqueado
-  (`ZK_BLOCKED_GROUP_ID`); al final se corre el sync de ese miembro (grupo correcto).
+- Si el usuario no existe en el lector, se crea con un UID libre: con membresía vigente
+  (`target_user_type` = `normal`) en el grupo con acceso (`ZK_ALLOWED_GROUP_ID`); si no, en el
+  grupo bloqueado (`ZK_BLOCKED_GROUP_ID`). Al final se corre el sync de ese miembro (grupo correcto).
 - Los errores llevan código RL-xxx y detalle (`error_code`, `error_detail`; ver
   `docs/CODIGOS_ERROR_LECTOR.md` en gym-System). Un sync fallido al final es un aviso (`RL-501`).
 
