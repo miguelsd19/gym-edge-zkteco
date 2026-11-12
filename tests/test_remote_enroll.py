@@ -8,6 +8,7 @@ from struct import pack, unpack
 from types import SimpleNamespace
 
 from edge_service_zkteco import enroll_probe
+from edge_service_zkteco.zk_enroll import FingerprintAlreadyExistsError
 from edge_service_zkteco.models import UserRoleAssignment, ZkUserInfo
 from edge_service_zkteco.remote_enroll import DONE, FAILED, RemoteEnrollManager
 from edge_service_zkteco.zk_client import (
@@ -448,6 +449,18 @@ class RemoteEnrollManagerTests(unittest.TestCase):
         result = _wait(manager, manager.handle_start({"member_id": "m-1", "biometrics": []})["job_id"])
         self.assertEqual((result["status"], result["error_code"]), (FAILED, "RL-101"))
         self.assertEqual(synced, [])
+
+    def test_existing_finger_reports_specific_message_and_keeps_access_sync(self):
+        device = _FakeDevice(enroll_error=FingerprintAlreadyExistsError(
+            'Este dedo ya tiene una huella registrada.'))
+        manager, synced = _manager(device)
+        result = _wait(manager, manager.handle_start({'member_id': 'm-1'})['job_id'])
+        self.assertEqual((result['status'], result['error_code']), (FAILED, 'RL-302'))
+        self.assertIn('ya tiene una huella registrada', result['message'])
+        self.assertEqual(result['results']['fingerprint'], 'failed')
+        self.assertTrue(result['finished_at'])
+        self.assertEqual(synced, ['m-1'])
+        self.assertIsNone(manager._active_job_id)
 
     def test_sync_failure_is_a_warning(self):
         device = _FakeDevice()

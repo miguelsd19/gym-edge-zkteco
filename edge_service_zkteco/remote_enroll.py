@@ -27,6 +27,7 @@ from typing import Any, Callable
 from edge_service_zkteco.backend_api import BackendUnavailableError
 from edge_service_zkteco.models import USER_DISABLED_FLAG
 from edge_service_zkteco.zk_client import FACE_NO_CAPTURE, FACE_SAVED, ZkUnavailableError
+from edge_service_zkteco.zk_enroll import FingerprintAlreadyExistsError
 
 MAX_FINGER_INDEX = 9
 KEEP_FINISHED_JOBS = 20
@@ -264,6 +265,8 @@ class RemoteEnrollManager:
             enrolled = self.device.enroll_fingerprint(
                 existing, job["finger_index"], timeout=self.config.zk_enroll_timeout_seconds
             )
+        except FingerprintAlreadyExistsError as exc:
+            raise EnrollFailure("RL-302", str(exc), "La plantilla de ese dedo ya existe en el lector.") from exc
         except ZkUnavailableError as exc:
             raise EnrollFailure(
                 "RL-301", "No se capturo la huella: nadie puso el dedo a tiempo o el lector no respondio.",
